@@ -1,0 +1,16 @@
+[package]
+name = "grass"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wgpu = "0.13.1"
+bytemuck = { version = "1.10", features = ["derive"] }
+winit = "*"
+glam = "*"
+async-executor = "*"
+env_logger = "*"
+log = "*"
+pollster = "*"
