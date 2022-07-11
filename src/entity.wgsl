@@ -64,8 +64,14 @@ fn fetch_shadow(light_id: u32, homogeneous_coords: vec4<f32>) -> f32 {
     return textureSampleCompareLevel(texture_shadow, sampler_shadow, light_local, i32(light_id), homogeneous_coords.z * proj_correction);
 }
 
+
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+}
+
 @fragment
-fn fs_draw(vertex: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_draw(vertex: VertexOutput) -> FragmentOutput {
     let normal = normalize(vertex.world_normal);
     // accumulate color
     var color: vec3<f32> = c_ambient;
@@ -79,6 +85,9 @@ fn fs_draw(vertex: VertexOutput) -> @location(0) vec4<f32> {
         // add light contribution
         color += shadow * diffuse * light.color.xyz;
     }
+
     // multiply the light by material color
-    return vec4<f32>(color, 1.0) * vertex.color;
+    let color = vec4<f32>(color, 1.0) * vertex.color;
+
+    return FragmentOutput(color, vec4<f32>(normal, 0.0));
 }

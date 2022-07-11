@@ -191,7 +191,8 @@ impl GrassPipeline {
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_draw",
-                targets: &[Some(format.into())],
+                //targets: &[Some(format.into())],
+                targets: &[Some(format.into()), Some(crate::Framebuffer::NORMAL.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -375,7 +376,7 @@ impl Grass {
             blade_curve: 2.1,
 
             wind_speed: 3.0,
-            wind_strength: 0.10, // 0.05
+            wind_strength: 0.05,
         };
 
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));

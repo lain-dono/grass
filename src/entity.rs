@@ -196,7 +196,7 @@ impl EntityPipeline {
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_draw",
-                targets: &[Some(format.into())],
+                targets: &[Some(format.into()), Some(crate::Framebuffer::NORMAL.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 front_face: wgpu::FrontFace::Ccw,

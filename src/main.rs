@@ -4,10 +4,12 @@ mod entity;
 mod framework;
 mod grass;
 mod mesh;
+mod post;
 
 use self::entity::{EntityPipeline, EntityUniforms, GlobalUniforms, LightRaw};
 use self::grass::Grass;
 use self::mesh::{create_cube, create_terrain};
+use self::post::Postprocess;
 use glam::{Mat4, Vec4};
 use wgpu::util::{align_to, DeviceExt};
 
@@ -50,8 +52,8 @@ fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f
 }
 
 fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
-    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
-    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
+    perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
+    //perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
 }
 
 struct Entity {
@@ -109,9 +111,7 @@ struct Example {
     shadow_pass: RenderPass,
     forward_pass: RenderPass,
 
-    forward_depth: wgpu::TextureView,
-    multisample: wgpu::TextureView,
-    sample_count: u32,
+    framebuffer: Framebuffer,
 
     entity_bind_group: wgpu::BindGroup,
     entity_uniform_buf: wgpu::Buffer,
@@ -123,6 +123,8 @@ struct Example {
 
     eye: glam::Vec3,
     show_grass: bool,
+    show_postprocess: bool,
+    post: Postprocess,
 }
 
 impl Example {
@@ -166,7 +168,7 @@ impl framework::Example for Example {
             .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
             && device.limits().max_storage_buffers_per_shader_stage > 0;
 
-        let sample_count = 4;
+        let sample_count = 1;
         let entity_pipeline = EntityPipeline::new(device, sc_desc.format, sample_count);
         let grass = Grass::new(device, &entity_pipeline, sc_desc.format, sample_count);
 
@@ -258,9 +260,9 @@ impl framework::Example for Example {
                 rotation_speed: 0.0,
                 //color: wgpu::Color::WHITE,
                 color: wgpu::Color {
-                    r: 0.05,
-                    g: 0.05,
-                    b: 0.05,
+                    r: 0.10,
+                    g: 0.00,
+                    b: 0.00,
                     a: 1.0,
                 },
                 vertex_buf: Rc::new(plane_vertex_buf),
@@ -294,22 +296,8 @@ impl framework::Example for Example {
 
         let extra_offset = ((cube_descs.len() + 1) * uniform_alignment as usize) as _;
 
-        let local_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(entity_uniform_size),
-                    },
-                    count: None,
-                }],
-                label: None,
-            });
         let entity_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &local_bind_group_layout,
+            layout: &entity_pipeline.entity_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -477,7 +465,7 @@ impl framework::Example for Example {
             }
         };
 
-        let forward_depth = create_depth_texture(device, sc_desc, sample_count);
+        let framebuffer = Framebuffer::new(device, sc_desc, sample_count);
 
         {
             grass.update(queue);
@@ -487,6 +475,13 @@ impl framework::Example for Example {
             queue.submit(iter::once(encoder.finish()));
         }
 
+        let post = Postprocess::new(
+            device,
+            sc_desc.format,
+            &framebuffer.depth_view,
+            &framebuffer.normal_view,
+        );
+
         Self {
             entities,
             lights: LightManager {
@@ -495,12 +490,10 @@ impl framework::Example for Example {
                 storage_buf: light_storage_buf,
             },
 
-            multisample: create_multisampled_framebuffer(device, sc_desc, sample_count),
-            sample_count,
+            framebuffer,
 
             shadow_pass,
             forward_pass,
-            forward_depth,
             entity_uniform_buf,
             entity_bind_group,
 
@@ -510,6 +503,9 @@ impl framework::Example for Example {
             extra_offset,
             eye,
             show_grass: true,
+            show_postprocess: false,
+
+            post,
         }
     }
 
@@ -534,6 +530,7 @@ impl framework::Example for Example {
                 (State::Pressed, Key::D) => self.eye.z -= 1.0,
 
                 (State::Pressed, Key::Key1) => self.show_grass = !self.show_grass,
+                (State::Pressed, Key::Key2) => self.show_postprocess = !self.show_postprocess,
 
                 _ => (),
             }
@@ -555,8 +552,16 @@ impl framework::Example for Example {
             bytemuck::cast_slice(mx_ref),
         );
 
-        self.forward_depth = create_depth_texture(device, config, self.sample_count);
-        self.multisample = create_multisampled_framebuffer(device, config, self.sample_count);
+        self.framebuffer.resize(device, config);
+
+        self.post.resize(
+            device,
+            queue,
+            config.width,
+            config.height,
+            &self.framebuffer.depth_view,
+            &self.framebuffer.normal_view,
+        );
     }
 
     fn render(
@@ -569,6 +574,7 @@ impl framework::Example for Example {
         _spawner: &framework::Spawner,
     ) {
         self.grass.update(queue);
+        self.post.update(queue, config.width, config.height);
 
         {
             let mx_total =
@@ -685,32 +691,38 @@ impl framework::Example for Example {
         // forward pass
         encoder.push_debug_group("forward rendering pass");
         {
-            let (view, resolve_target) = if self.sample_count <= 1 {
-                (view, None)
-            } else {
-                (&self.multisample, Some(view))
-            };
+            let (view, resolve_target) = self.framebuffer.target(view);
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: true,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.1,
+                                g: 0.2,
+                                b: 0.3,
+                                a: 1.0,
+                            }),
+                            store: true,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.framebuffer.normal_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: true,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.forward_depth,
+                    view: &self.framebuffer.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
-                        store: false,
+                        store: true,
                     }),
                     stencil_ops: None,
                 }),
@@ -739,6 +751,15 @@ impl framework::Example for Example {
         }
         encoder.pop_debug_group();
 
+        //queue.submit(iter::once(encoder.finish()));
+        //let mut encoder = device.create_command_encoder(&Default::default());
+
+        encoder.push_debug_group("postprocess");
+        if self.show_postprocess {
+            self.post.draw(&mut encoder, view);
+        }
+        encoder.pop_debug_group();
+
         queue.submit(iter::once(encoder.finish()));
     }
 }
@@ -764,49 +785,118 @@ impl LightManager {
     }
 }
 
-fn create_depth_texture(
-    device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+struct Framebuffer {
     sample_count: u32,
-) -> wgpu::TextureView {
-    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-        size: wgpu::Extent3d {
+    color_target: wgpu::TextureView,
+
+    normal_view: wgpu::TextureView,
+
+    depth_view: wgpu::TextureView,
+}
+
+impl Framebuffer {
+    const NORMAL: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2Unorm;
+
+    fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, sample_count: u32) -> Self {
+        let color_target = Self::multisampled(
+            device,
+            config,
+            sample_count,
+            config.format,
+            wgpu::TextureUsages::empty(),
+        );
+        let normal_view = Self::multisampled(
+            device,
+            config,
+            sample_count,
+            Self::NORMAL,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let depth_view = Self::depth(device, config, sample_count);
+
+        Self {
+            sample_count,
+            color_target,
+            normal_view,
+            depth_view,
+        }
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+        self.color_target = Self::multisampled(
+            device,
+            config,
+            self.sample_count,
+            config.format,
+            wgpu::TextureUsages::empty(),
+        );
+        self.normal_view = Self::multisampled(
+            device,
+            config,
+            self.sample_count,
+            Self::NORMAL,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        self.depth_view = Self::depth(device, config, self.sample_count);
+    }
+
+    fn target<'a>(
+        &'a self,
+        view: &'a wgpu::TextureView,
+    ) -> (&'a wgpu::TextureView, Option<&'a wgpu::TextureView>) {
+        if self.sample_count <= 1 {
+            (view, None)
+        } else {
+            (&self.color_target, Some(view))
+        }
+    }
+
+    fn multisampled(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        sample_count: u32,
+        format: wgpu::TextureFormat,
+        usages: wgpu::TextureUsages,
+    ) -> wgpu::TextureView {
+        let size = wgpu::Extent3d {
             width: config.width,
             height: config.height,
             depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count,
-        dimension: wgpu::TextureDimension::D2,
-        format: EntityPipeline::DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        label: None,
-    });
+        };
+        let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usages,
+        };
 
-    depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
-}
+        device
+            .create_texture(multisampled_frame_descriptor)
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
 
-fn create_multisampled_framebuffer(
-    device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
-    sample_count: u32,
-) -> wgpu::TextureView {
-    let multisampled_texture_extent = wgpu::Extent3d {
-        width: config.width,
-        height: config.height,
-        depth_or_array_layers: 1,
-    };
-    let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
-        label: None,
-        size: multisampled_texture_extent,
-        mip_level_count: 1,
-        sample_count,
-        dimension: wgpu::TextureDimension::D2,
-        format: config.format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-    };
+    fn depth(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        sample_count: u32,
+    ) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: EntityPipeline::DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        });
 
-    device
-        .create_texture(multisampled_frame_descriptor)
-        .create_view(&wgpu::TextureViewDescriptor::default())
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
 }
