@@ -52,8 +52,8 @@ fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f
 }
 
 fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
-    perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
-    //perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
+    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
+    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
 }
 
 struct Entity {

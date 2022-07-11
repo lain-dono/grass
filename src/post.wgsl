@@ -22,8 +22,8 @@ struct FragmentInput {
 @group(0) @binding(0) var<uniform> u_screen: ScreenUniforms;
 //@group(0) @binding(1) var depth_texture: texture_multisampled_2d<f32>;
 //@group(0) @binding(1) var depth_texture: texture_2d<f32>;
-@group(0) @binding(1) var depth_texture: texture_depth_2d;
-@group(0) @binding(2) var framebuffer_sampler: sampler;
+@group(0) @binding(1) var framebuffer_sampler: sampler;
+@group(0) @binding(2) var depth_texture: texture_depth_2d;
 @group(0) @binding(3) var normal_texture: texture_2d<f32>;
 
 @vertex
@@ -88,10 +88,8 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let depth2 = 1.0 - textureSample(depth_texture, framebuffer_sampler, br);
     let depth3 = 1.0 - textureSample(depth_texture, framebuffer_sampler, tl);
 
-
     let view_space_directon = vec3<f32>(4.0, 7.0, 8.0);
     let view_space_directon = normalize(view_space_directon);
-
 
     // Transform the view normal from the 0...1 range to the -1...1 range.
     let view_normal = normal0 * 2.0 - 1.0;
@@ -135,29 +133,4 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let edge_color = vec4<f32>(params_color.rgb, params_color.a * edge);
 
     return edge_color;
-
-
-//      let edge_depth = sqrt(pow(depth_finite_difference_10, 2.0) + pow(depth_finite_difference_32, 2.0)) * 100.0;
-
-//      //let depth = abs(depth_finite_difference_0) * 100.0;
-//      //let depth = depth0;
-//      //let depth = textureSample(depth_texture, framebuffer_sampler, in.uv);
-//      //let depth = remap(depth, vec2<f32>(0.9656, 1.0), vec2<f32>(0.0, 1.0));
-//      //return vec4<f32>(depth, depth, depth, 1.0);
-
-//      let threshold = 0.2;
-//      //let factor = select(0.0, 1.0, edge_depth > threshold);
-//      //let factor = step(threshold, edge_depth);
-//      let factor = smoothstep(0.01, 0.3, edge_depth);
-
-//      let color = vec3<f32>(0.0);
-
-//      //return vec4<f32>(factor, factor, factor, factor);
-//      //return vec4<f32>(color.rgb * factor, factor);
-
-//      //return vec4<f32>(in.uv.x, in.uv.y, depth, 1.0);
-
-//      let normal = textureSample(normal_texture, framebuffer_sampler, in.uv).xyz;
-
-//      return vec4<f32>(normal, 1.0);
 }
