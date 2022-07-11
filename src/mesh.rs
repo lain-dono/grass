@@ -62,10 +62,10 @@ pub fn create_cube() -> (Vec<Vertex>, Vec<u16>) {
 
 pub fn _create_plane(size: i8) -> (Vec<Vertex>, Vec<u16>) {
     let vertex_data = [
-        vertex([size, -size, 0], [0, 0, 1]),
-        vertex([size, size, 0], [0, 0, 1]),
-        vertex([-size, -size, 0], [0, 0, 1]),
-        vertex([-size, size, 0], [0, 0, 1]),
+        vertex([size, -size, 0], [0, 1, 0]),
+        vertex([size, size, 0], [0, 1, 0]),
+        vertex([-size, -size, 0], [0, 1, 0]),
+        vertex([-size, size, 0], [0, 1, 0]),
     ];
 
     let index_data: &[u16] = &[0, 1, 2, 2, 1, 3];
@@ -83,7 +83,7 @@ pub fn create_terrain(x_size: usize, z_size: usize) -> (Vec<Vertex>, Vec<u16>) {
     let oz = z_size as i8 / 2;
     for z in 0..=z_size as i8 {
         for x in 0..=x_size as i8 {
-            vertices.push(vertex([x - ox, z - oz, 0], [0, 0, 1]));
+            vertices.push(vertex([x - ox, 0, z - oz], [0, 1, 0]));
         }
     }
 
@@ -93,13 +93,13 @@ pub fn create_terrain(x_size: usize, z_size: usize) -> (Vec<Vertex>, Vec<u16>) {
             let (z1, x1) = (z0 + x_size + 1, x0 + 1);
 
             indices.extend_from_slice(&[
-                (z0 + x0) as _,
-                (z1 + x1) as _,
                 (z1 + x0) as _,
-                //
-                (z0 + x0) as _,
-                (z0 + x1) as _,
                 (z1 + x1) as _,
+                (z0 + x0) as _,
+                //
+                (z1 + x1) as _,
+                (z0 + x1) as _,
+                (z0 + x0) as _,
             ]);
         }
     }

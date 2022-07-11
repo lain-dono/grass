@@ -8,10 +8,50 @@ mod mesh;
 use self::entity::{EntityPipeline, EntityUniforms, GlobalUniforms, LightRaw};
 use self::grass::Grass;
 use self::mesh::{create_cube, create_terrain};
+use glam::{Mat4, Vec4};
 use wgpu::util::{align_to, DeviceExt};
 
 fn main() {
     framework::run::<Example>("shadow");
+}
+
+#[inline]
+pub fn perspective_wgpu_dx(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
+    let t = (vertical_fov / 2.0).tan();
+    let sy = 1.0 / t;
+    let sx = sy / aspect_ratio;
+    let nmf = z_near - z_far;
+
+    Mat4 {
+        x_axis: Vec4::new(sx, 0.0, 0.0, 0.0),
+        y_axis: Vec4::new(0.0, sy, 0.0, 0.0),
+        z_axis: Vec4::new(0.0, 0.0, z_far / nmf, -1.0),
+        w_axis: Vec4::new(0.0, 0.0, z_near * z_far / nmf, 0.0),
+    }
+}
+
+#[inline]
+pub fn perspective_infinite_z_wgpu_dx(vertical_fov: f32, aspect_ratio: f32, z_near: f32) -> Mat4 {
+    let t = (vertical_fov / 2.0).tan();
+    let sy = 1.0 / t;
+    let sx = sy / aspect_ratio;
+
+    Mat4 {
+        x_axis: Vec4::new(sx, 0.0, 0.0, 0.0),
+        y_axis: Vec4::new(0.0, sy, 0.0, 0.0),
+        z_axis: Vec4::new(0.0, 0.0, -1.0, -1.0),
+        w_axis: Vec4::new(0.0, 0.0, -z_near, 0.0),
+    }
+}
+
+fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
+    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
+    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
+}
+
+fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
+    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
+    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
 }
 
 struct Entity {
@@ -35,8 +75,8 @@ struct Light {
 
 impl Light {
     fn to_raw(&self) -> LightRaw {
-        let view = glam::Mat4::look_at_rh(self.pos, glam::Vec3::ZERO, glam::Vec3::Z);
-        let projection = glam::Mat4::perspective_rh(
+        let view = glam::Mat4::look_at_rh(self.pos, glam::Vec3::ZERO, glam::Vec3::Y);
+        let projection = perspective_light(
             self.fov * consts::PI / 180.,
             1.0,
             self.depth.start,
@@ -80,6 +120,9 @@ struct Example {
     grass: Grass,
 
     extra_offset: wgpu::DynamicOffset,
+
+    eye: glam::Vec3,
+    show_grass: bool,
 }
 
 impl Example {
@@ -89,13 +132,9 @@ impl Example {
         depth_or_array_layers: EntityPipeline::MAX_LIGHTS as u32,
     };
 
-    fn generate_matrix(aspect_ratio: f32) -> glam::Mat4 {
-        let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_2, aspect_ratio, 0.1, 225.0);
-        let view = glam::Mat4::look_at_rh(
-            glam::Vec3::new(4.0f32, -8.0, 12.0),
-            glam::Vec3::new(0f32, 0.0, 0.0),
-            glam::Vec3::Z,
-        );
+    fn generate_matrix(aspect_ratio: f32, eye: glam::Vec3) -> glam::Mat4 {
+        let projection = perspective_scene(consts::FRAC_PI_2, aspect_ratio, 0.1, 200.0);
+        let view = glam::Mat4::look_at_rh(eye, glam::Vec3::new(0f32, 0.0, 0.0), glam::Vec3::Y);
         projection * view
     }
 }
@@ -127,7 +166,7 @@ impl framework::Example for Example {
             .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
             && device.limits().max_storage_buffers_per_shader_stage > 0;
 
-        let sample_count = 1;
+        let sample_count = 4;
         let entity_pipeline = EntityPipeline::new(device, sc_desc.format, sample_count);
         let grass = Grass::new(device, &entity_pipeline, sc_desc.format, sample_count);
 
@@ -170,13 +209,13 @@ impl framework::Example for Example {
         }
         let cube_descs = [
             CubeDesc {
-                offset: glam::Vec3::new(-2.0, -2.0, 2.0),
+                offset: glam::Vec3::new(-2.0, 2.0, -2.0),
                 angle: 10.0,
                 scale: 0.7,
                 rotation: 0.1,
             },
             CubeDesc {
-                offset: glam::Vec3::new(2.0, -2.0, 2.0),
+                offset: glam::Vec3::new(2.0, 2.0, -2.0),
                 angle: 50.0,
                 scale: 1.3,
                 rotation: 0.2,
@@ -322,7 +361,7 @@ impl framework::Example for Example {
             .collect::<Vec<_>>();
         let lights = vec![
             Light {
-                pos: glam::Vec3::new(7.0, -5.0, 10.0),
+                pos: glam::Vec3::new(7.0, 10.0, -5.0),
                 color: wgpu::Color {
                     r: 0.5,
                     g: 1.0,
@@ -334,7 +373,7 @@ impl framework::Example for Example {
                 target_view: shadow_target_views[0].take().unwrap(),
             },
             Light {
-                pos: glam::Vec3::new(-5.0, 7.0, 10.0),
+                pos: glam::Vec3::new(-5.0, 10.0, 7.0),
                 color: wgpu::Color {
                     r: 1.0,
                     g: 0.5,
@@ -390,10 +429,12 @@ impl framework::Example for Example {
             }
         };
 
+        let eye = glam::Vec3::new(4.0f32, 7.0, 8.0);
+
         let forward_pass = {
             // Create pipeline layout
 
-            let mx_total = Self::generate_matrix(sc_desc.width as f32 / sc_desc.height as f32);
+            let mx_total = Self::generate_matrix(sc_desc.width as f32 / sc_desc.height as f32, eye);
             let forward_uniforms = GlobalUniforms {
                 proj: mx_total.to_cols_array_2d(),
                 num_lights: [lights.len() as u32, 0, 0, 0],
@@ -467,11 +508,36 @@ impl framework::Example for Example {
             entity_pipeline,
 
             extra_offset,
+            eye,
+            show_grass: true,
         }
     }
 
-    fn update(&mut self, _event: winit::event::WindowEvent) {
-        //empty
+    fn update(&mut self, event: winit::event::WindowEvent) {
+        use winit::event::{ElementState as State, VirtualKeyCode as Key};
+
+        if let winit::event::WindowEvent::KeyboardInput {
+            input:
+                winit::event::KeyboardInput {
+                    state,
+                    virtual_keycode: Some(key),
+                    ..
+                },
+            ..
+        } = event
+        {
+            match (state, key) {
+                (State::Pressed, Key::W) => self.eye.x += 1.0,
+                (State::Pressed, Key::S) => self.eye.x -= 1.0,
+
+                (State::Pressed, Key::A) => self.eye.z += 1.0,
+                (State::Pressed, Key::D) => self.eye.z -= 1.0,
+
+                (State::Pressed, Key::Key1) => self.show_grass = !self.show_grass,
+
+                _ => (),
+            }
+        }
     }
 
     fn resize(
@@ -481,7 +547,7 @@ impl framework::Example for Example {
         queue: &wgpu::Queue,
     ) {
         // update view-projection matrix
-        let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32);
+        let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
         let mx_ref: &[f32; 16] = mx_total.as_ref();
         queue.write_buffer(
             &self.forward_pass.uniform_buf,
@@ -495,12 +561,25 @@ impl framework::Example for Example {
 
     fn render(
         &mut self,
+
+        config: &wgpu::SurfaceConfiguration,
         view: &wgpu::TextureView,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _spawner: &framework::Spawner,
     ) {
         self.grass.update(queue);
+
+        {
+            let mx_total =
+                Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
+            let mx_ref: &[f32; 16] = mx_total.as_ref();
+            queue.write_buffer(
+                &self.forward_pass.uniform_buf,
+                0,
+                bytemuck::cast_slice(mx_ref),
+            );
+        }
 
         // update uniforms
         for entity in self.entities.iter_mut() {
@@ -650,7 +729,7 @@ impl framework::Example for Example {
                 }
             }
 
-            if true {
+            if self.show_grass {
                 pass.set_pipeline(&self.grass.pipeline.draw);
                 pass.set_bind_group(1, &self.entity_bind_group, &[self.extra_offset]);
                 pass.set_vertex_buffer(0, self.grass.dst_vertices_buf.slice(..));

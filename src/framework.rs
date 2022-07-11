@@ -63,6 +63,7 @@ pub trait Example: 'static + Sized {
     fn update(&mut self, event: WindowEvent);
     fn render(
         &mut self,
+        config: &wgpu::SurfaceConfiguration,
         view: &wgpu::TextureView,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -278,7 +279,7 @@ fn start<E: Example>(
         format: surface.get_supported_formats(&adapter)[0],
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Fifo,
+        present_mode: wgpu::PresentMode::Mailbox,
     };
     surface.configure(&device, &config);
 
@@ -378,7 +379,7 @@ fn start<E: Example>(
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                example.render(&view, &device, &queue, &spawner);
+                example.render(&config, &view, &device, &queue, &spawner);
 
                 frame.present();
 

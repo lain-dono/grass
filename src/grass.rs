@@ -433,8 +433,8 @@ fn create_source(x_size: usize, z_size: usize, scale: f32) -> Vec<SrcVertex> {
         for x in 0..=x_size as i32 {
             let (x, z) = (x - hx, z - hz);
             vertices.push(SrcVertex {
-                position: [x as f32 * scale, z as f32 * scale, 0.0],
-                normal: [0.0, 0.0, 1.0],
+                position: [x as f32 * scale, 0.0, z as f32 * scale],
+                normal: [0.0, 1.0, 0.0],
             });
         }
     }

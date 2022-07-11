@@ -227,17 +227,17 @@ fn cs_main_fill(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let wind_speed = params.time * params.wind_speed;
     let wind_sin =
         sin(wind_speed + src_position.x      ) +
-        sin(wind_speed + src_position.y * 2.0) + // z
+        sin(wind_speed + src_position.z * 2.0) + // z
         sin(wind_speed * 0.1 + src_position.x);
     let wind_cos =
         cos(wind_speed + src_position.x * 2.0) +
-        cos(wind_speed + src_position.y      ); // z
+        cos(wind_speed + src_position.z      ); // z
 
     //let wind = vec3<f32>(wind_x, 0.0, wind_z) * params_wind_strength;
     let wind = vec3<f32>(wind_sin, wind_cos, 0.0) * params.wind_strength;
 
-    //let rotation_axis = vec3<f32>(0.0, 1.0, -0.1);
-    let rotation_axis = vec3<f32>(-0.1, 0.0, 1.0);
+    let rotation_axis = vec3<f32>(0.0, 1.0, -0.1);
+    //let rotation_axis = vec3<f32>(-0.1, 0.0, 1.0);
 
     var displacement = vec3<f32>(0.0) + wind;
 
@@ -272,8 +272,8 @@ fn cs_main_fill(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             let offset = segment_index * 2u;
 
-            position[offset + 0u] = translation + vec3<f32>( width, forward, height) * blade_rotation;
-            position[offset + 1u] = translation + vec3<f32>(-width, forward, height) * blade_rotation;
+            position[offset + 0u] = translation + vec3<f32>( width, height, forward) * blade_rotation;
+            position[offset + 1u] = translation + vec3<f32>(-width, height, forward) * blade_rotation;
 
             texcoord[offset + 0u] = vec2<f32>(0.0, taper_width);
             texcoord[offset + 1u] = vec2<f32>(1.0, taper_width);
@@ -284,7 +284,7 @@ fn cs_main_fill(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // top vertex
         let translation = src_position + displacement;
         let forward = blade_offset + params.blade_forward;
-        let local_displacement = vec3<f32>(0.0, forward, blade_height);
+        let local_displacement = vec3<f32>(0.0, blade_height, forward);
         position[top_vtx_offset] = translation + local_displacement * blade_rotation;
         texcoord[top_vtx_offset] = vec2<f32>(0.5, 1.0);
 
