@@ -1,56 +1,36 @@
 use bytemuck::{Pod, Zeroable};
 use std::mem::size_of;
-use std::time::Instant;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Params {
-    pub view_space_directon: [f32; 4],
-    pub color: [f32; 4],
-
-    /// Number of pixels between samples that are tested for an edge.
-    /// When this value is 1, tested samples are adjacent.
-    pub scale: i32,
-
-    pad: [f32; 3],
-
-    /// Difference between depth values, scaled by the current depth, required to draw an edge.
-    pub depth_threshold: f32, // 0..1
-
-    /// The value at which the dot product between the surface normal
-    /// and the view direction will affect the depth threshold.
-    /// This ensures that surfaces at right angles to the camera
-    /// require a larger depth threshold to draw an edge,
-    /// avoiding edges being drawn along slopes.
-    pub depth_normal_threshold: f32,
-
-    /// Scale the strength of how much the depth_normal_threshold affects the depth threshold.
-    pub depth_normal_threshold_scale: f32,
-
-    /// Larger values will require the difference between normals to be greater to draw an edge.
-    pub normal_threshold: f32, // 0..1
+    //view_proj: [f32; 16],
+    transform: [f32; 16],
+    tint: [f32; 4], // 1,1,1,0.5
+    inv_size: [f32; 2],
+    strength: f32, // 0.5 (0..3)
+    znear: f32,
 }
 
-pub struct Postprocess {
-    pub bind_group_layout: wgpu::BindGroupLayout,
+pub struct FogPlanePipeline {
     pub bind_group: wgpu::BindGroup,
-
     pub pipeline: wgpu::RenderPipeline,
-    pub uniform_buf: wgpu::Buffer,
+    pub layout: wgpu::BindGroupLayout,
+    pub buffer: wgpu::Buffer,
 
-    pub start: Instant,
+    pub vertices: wgpu::Buffer,
+    pub indices: wgpu::Buffer,
 }
 
-impl Postprocess {
+impl FogPlanePipeline {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         depth: &wgpu::TextureView,
-        normal: &wgpu::TextureView,
         sample_count: u32,
     ) -> Self {
-        let source = std::fs::read_to_string("src/post.wgsl").unwrap();
+        let source = std::fs::read_to_string("src/fog_plane.wgsl").unwrap();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -58,9 +38,10 @@ impl Postprocess {
 
         let multisampled = sample_count > 1;
 
-        let uniform_size = size_of::<Params>() as wgpu::BufferAddress;
+        let params_size = size_of::<Params>() as wgpu::BufferAddress;
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -68,7 +49,7 @@ impl Postprocess {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(uniform_size),
+                        min_binding_size: wgpu::BufferSize::new(params_size),
                     },
                     count: None,
                 },
@@ -82,34 +63,29 @@ impl Postprocess {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled,
-                    },
-                    count: None,
-                },
             ],
-            label: None,
         });
 
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("postprocess"),
-            bind_group_layouts: &[&bind_group_layout],
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fog plane"),
+            bind_group_layouts: &[&layout],
             push_constant_ranges: &[],
         });
 
+        let vb_desc = wgpu::VertexBufferLayout {
+            array_stride: size_of::<[i8; 4]>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Sint8x4],
+        };
+
         // Create the render pipeline
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("postprocess"),
-            layout: Some(&layout),
+            label: Some("fog plane"),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
-                entry_point: "vs_fullscreen",
-                buffers: &[],
+                entry_point: "vs_main",
+                buffers: &[vb_desc],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -119,7 +95,6 @@ impl Postprocess {
                     "fs_main_single"
                 },
                 targets: &[Some(wgpu::ColorTargetState {
-                    //format.into()
                     format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     //blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -139,54 +114,68 @@ impl Postprocess {
             multiview: None,
         });
 
-        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::bytes_of(&Params::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group = create_bind_group(device, &bind_group_layout, &uniform_buf, depth, normal);
+        let bind_group = create_bind_group(device, &layout, &buffer, depth);
+
+        let (vertices, indices) = {
+            let indices = crate::mesh::create_quad_indices();
+            let vertices = crate::mesh::create_quad_xz(5, 5);
+
+            let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fog plane vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fog plane indices"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
+            (vertices, indices)
+        };
 
         Self {
-            bind_group_layout,
+            layout,
             pipeline,
-            uniform_buf,
+            buffer,
             bind_group,
-            start: Instant::now(),
+
+            vertices,
+            indices,
         }
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue, view_space_directon: glam::Vec3) {
+    pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        view_proj: glam::Mat4,
+        znear: f32,
+    ) {
+        let transform = glam::Mat4::from_translation(glam::vec3(0.0, 4.0, 0.0));
         let uniforms = Params {
-            //size: [width, height],
-            //inv_size: [width.recip(), height.recip()],
-            //time: self.start.elapsed().as_secs_f32(),
-            view_space_directon: view_space_directon.extend(0.0).into(),
-            color: [0.02, 0.00, 0.00, 0.25],
-            scale: 0,
-            depth_threshold: 1.5,
-            depth_normal_threshold: 0.5,
-            depth_normal_threshold_scale: 7.0,
-            normal_threshold: 0.4,
-
-            ..Params::zeroed()
+            //view_proj: view_proj.to_cols_array(),
+            //transform: transform.to_cols_array(),
+            transform: (view_proj * transform).to_cols_array(),
+            //transform: view_proj.to_cols_array(),
+            tint: [1.0, 1.0, 1.0, 0.5],
+            inv_size: [(width as f32).recip(), (height as f32).recip()],
+            strength: 0.15,
+            znear,
         };
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    pub fn resize(
-        &mut self,
-        device: &wgpu::Device,
-        depth: &wgpu::TextureView,
-        normal: &wgpu::TextureView,
-    ) {
-        self.bind_group = create_bind_group(
-            device,
-            &self.bind_group_layout,
-            &self.uniform_buf,
-            depth,
-            normal,
-        );
+    pub fn resize(&mut self, device: &wgpu::Device, depth: &wgpu::TextureView) {
+        self.bind_group = create_bind_group(device, &self.layout, &self.buffer, depth);
     }
 
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
@@ -205,16 +194,17 @@ impl Postprocess {
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.draw_indexed(0..6, 0, 0..1);
     }
 }
 
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    uniform_buf: &wgpu::Buffer,
+    params_buf: &wgpu::Buffer,
     depth: &wgpu::TextureView,
-    normal: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -222,15 +212,11 @@ fn create_bind_group(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buf.as_entire_binding(),
+                resource: params_buf.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(depth),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(normal),
             },
         ],
     })

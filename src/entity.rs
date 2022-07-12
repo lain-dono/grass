@@ -1,3 +1,4 @@
+use super::Framebuffer;
 use bytemuck::{Pod, Zeroable};
 use std::mem::size_of;
 
@@ -41,7 +42,6 @@ pub struct EntityPipeline {
 impl EntityPipeline {
     pub const MAX_LIGHTS: usize = 10;
     pub const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-    pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let source = std::fs::read_to_string("src/entity.wgsl").unwrap();
@@ -196,7 +196,15 @@ impl EntityPipeline {
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_draw",
-                targets: &[Some(format.into()), Some(crate::Framebuffer::NORMAL.into())],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        //blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::all(),
+                    }),
+                    Some(crate::Framebuffer::NORMAL.into()),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 front_face: wgpu::FrontFace::Ccw,
@@ -204,7 +212,7 @@ impl EntityPipeline {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: Self::DEPTH_FORMAT,
+                format: Framebuffer::DEPTH,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),

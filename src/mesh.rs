@@ -60,17 +60,41 @@ pub fn create_cube() -> (Vec<Vertex>, Vec<u16>) {
     (vertex_data.to_vec(), index_data.to_vec())
 }
 
-pub fn _create_plane(size: i8) -> (Vec<Vertex>, Vec<u16>) {
-    let vertex_data = [
-        vertex([size, -size, 0], [0, 1, 0]),
-        vertex([size, size, 0], [0, 1, 0]),
-        vertex([-size, -size, 0], [0, 1, 0]),
-        vertex([-size, size, 0], [0, 1, 0]),
-    ];
+pub fn create_quad_indices() -> Vec<u16> {
+    vec![0, 1, 2, 2, 1, 3]
+}
 
-    let index_data: &[u16] = &[0, 1, 2, 2, 1, 3];
+pub fn create_quad_xz(x: i8, z: i8) -> Vec<[i8; 4]> {
+    let (px, nx) = (x, -x);
+    let (pz, nz) = (z, -z);
+    vec![
+        [px, 0, nz, 1],
+        [px, 0, pz, 1],
+        [nx, 0, nz, 1],
+        [nx, 0, pz, 1],
+    ]
+}
 
-    (vertex_data.to_vec(), index_data.to_vec())
+pub fn create_quad_xy(x: i8, y: i8) -> Vec<[i8; 4]> {
+    let (px, nx) = (x, -x);
+    let (py, ny) = (y, -y);
+    vec![
+        [px, ny, 0, 1],
+        [px, py, 0, 1],
+        [nx, ny, 0, 1],
+        [nx, py, 0, 1],
+    ]
+}
+
+pub fn create_quad_yz(y: i8, z: i8) -> Vec<[i8; 4]> {
+    let (py, ny) = (y, -y);
+    let (pz, nz) = (z, -z);
+    vec![
+        [0, py, nz, 1],
+        [0, py, pz, 1],
+        [0, ny, nz, 1],
+        [0, ny, pz, 1],
+    ]
 }
 
 pub fn create_terrain(x_size: usize, z_size: usize) -> (Vec<Vertex>, Vec<u16>) {
@@ -79,8 +103,9 @@ pub fn create_terrain(x_size: usize, z_size: usize) -> (Vec<Vertex>, Vec<u16>) {
     let mut vertices = Vec::with_capacity((x_size + 1) * (z_size + 1));
     let mut indices = Vec::with_capacity(x_size * z_size * 6);
 
-    let ox = x_size as i8 / 2;
-    let oz = z_size as i8 / 2;
+    let ox = (x_size / 2) as i8;
+    let oz = (z_size / 2) as i8;
+
     for z in 0..=z_size as i8 {
         for x in 0..=x_size as i8 {
             vertices.push(vertex([x - ox, 0, z - oz], [0, 1, 0]));
@@ -96,7 +121,6 @@ pub fn create_terrain(x_size: usize, z_size: usize) -> (Vec<Vertex>, Vec<u16>) {
                 (z1 + x0) as _,
                 (z1 + x1) as _,
                 (z0 + x0) as _,
-                //
                 (z1 + x1) as _,
                 (z0 + x1) as _,
                 (z0 + x0) as _,

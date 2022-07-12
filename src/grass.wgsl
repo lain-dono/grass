@@ -48,7 +48,9 @@ fn vs_draw(
     result.world_normal = mat3x3<f32>(w.x.xyz, w.y.xyz, w.z.xyz) * vec3<f32>(normal.xyz);
     result.world_position = world_pos;
     result.proj_position = u_globals.view_proj * world_pos;
-    result.color = mix(vec4<f32>(0.10, 0.0, 0.0, 1.0), vec4<f32>(1.0, 0.0, 0.0, 1.0), uv.y);
+    //result.color = mix(vec4<f32>(0.10, 0.0, 0.0, 1.0), vec4<f32>(1.0, 0.0, 0.0, 1.0), uv.y);
+    result.color = mix(vec4<f32>(0.10, 0.0, 0.0, 1.0), vec4<f32>(1.0, 1.0, 1.0, 1.0), uv.y);
+    //result.color = mix(vec4<f32>(0.529, 0.706, 0.600, 1.0) * 0.5, vec4<f32>(0.706, 0.635, 0.529, 1.0) * 0.5, uv.y);
     return result;
 }
 

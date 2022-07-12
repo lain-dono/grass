@@ -1,12 +1,16 @@
 use std::{f32::consts, iter, mem, num::NonZeroU32, ops::Range, rc::Rc};
 
 mod entity;
+mod fog_plane;
+mod framebuffer;
 mod framework;
 mod grass;
 mod mesh;
 mod post;
 
 use self::entity::{EntityPipeline, EntityUniforms, GlobalUniforms, LightRaw};
+use self::fog_plane::FogPlanePipeline;
+use self::framebuffer::Framebuffer;
 use self::grass::Grass;
 use self::mesh::{create_cube, create_terrain};
 use self::post::Postprocess;
@@ -46,12 +50,12 @@ pub fn perspective_infinite_z_wgpu_dx(vertical_fov: f32, aspect_ratio: f32, z_ne
     }
 }
 
-fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
+fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, _z_far: f32) -> Mat4 {
     //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
     perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
 }
 
-fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
+fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, _z_far: f32) -> Mat4 {
     //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
     perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
 }
@@ -125,6 +129,9 @@ struct Example {
     show_grass: bool,
     show_postprocess: bool,
     post: Postprocess,
+
+    camera: glam::Mat4,
+    fog_plane: FogPlanePipeline,
 }
 
 impl Example {
@@ -168,7 +175,7 @@ impl framework::Example for Example {
             .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
             && device.limits().max_storage_buffers_per_shader_stage > 0;
 
-        let sample_count = 1;
+        let sample_count = 4;
         let entity_pipeline = EntityPipeline::new(device, sc_desc.format, sample_count);
         let grass = Grass::new(device, &entity_pipeline, sc_desc.format, sample_count);
 
@@ -419,12 +426,12 @@ impl framework::Example for Example {
 
         let eye = glam::Vec3::new(4.0f32, 7.0, 8.0);
 
+        let camera = Self::generate_matrix(sc_desc.width as f32 / sc_desc.height as f32, eye);
         let forward_pass = {
             // Create pipeline layout
 
-            let mx_total = Self::generate_matrix(sc_desc.width as f32 / sc_desc.height as f32, eye);
             let forward_uniforms = GlobalUniforms {
-                proj: mx_total.to_cols_array_2d(),
+                proj: camera.to_cols_array_2d(),
                 num_lights: [lights.len() as u32, 0, 0, 0],
             };
             let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -480,6 +487,14 @@ impl framework::Example for Example {
             sc_desc.format,
             &framebuffer.depth_view,
             &framebuffer.normal_view,
+            sample_count,
+        );
+
+        let fog_plane = FogPlanePipeline::new(
+            device,
+            sc_desc.format,
+            &framebuffer.depth_view,
+            sample_count,
         );
 
         Self {
@@ -503,9 +518,11 @@ impl framework::Example for Example {
             extra_offset,
             eye,
             show_grass: true,
-            show_postprocess: false,
+            show_postprocess: true,
 
+            camera,
             post,
+            fog_plane,
         }
     }
 
@@ -544,8 +561,8 @@ impl framework::Example for Example {
         queue: &wgpu::Queue,
     ) {
         // update view-projection matrix
-        let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
-        let mx_ref: &[f32; 16] = mx_total.as_ref();
+        self.camera = Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
+        let mx_ref: &[f32; 16] = self.camera.as_ref();
         queue.write_buffer(
             &self.forward_pass.uniform_buf,
             0,
@@ -556,36 +573,36 @@ impl framework::Example for Example {
 
         self.post.resize(
             device,
-            queue,
-            config.width,
-            config.height,
             &self.framebuffer.depth_view,
             &self.framebuffer.normal_view,
         );
+
+        self.fog_plane.resize(device, &self.framebuffer.depth_view);
     }
 
     fn render(
         &mut self,
-
         config: &wgpu::SurfaceConfiguration,
         view: &wgpu::TextureView,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _spawner: &framework::Spawner,
     ) {
-        self.grass.update(queue);
-        self.post.update(queue, config.width, config.height);
-
         {
-            let mx_total =
+            self.camera =
                 Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
-            let mx_ref: &[f32; 16] = mx_total.as_ref();
+            let mx_ref: &[f32; 16] = self.camera.as_ref();
             queue.write_buffer(
                 &self.forward_pass.uniform_buf,
                 0,
                 bytemuck::cast_slice(mx_ref),
             );
         }
+
+        self.grass.update(queue);
+        self.post.update(queue, self.eye);
+        self.fog_plane
+            .update(queue, config.width, config.height, self.camera, 0.1);
 
         // update uniforms
         for entity in self.entities.iter_mut() {
@@ -751,13 +768,14 @@ impl framework::Example for Example {
         }
         encoder.pop_debug_group();
 
-        //queue.submit(iter::once(encoder.finish()));
-        //let mut encoder = device.create_command_encoder(&Default::default());
-
         encoder.push_debug_group("postprocess");
         if self.show_postprocess {
             self.post.draw(&mut encoder, view);
         }
+        encoder.pop_debug_group();
+
+        encoder.push_debug_group("fog_plane");
+        self.fog_plane.draw(&mut encoder, view);
         encoder.pop_debug_group();
 
         queue.submit(iter::once(encoder.finish()));
@@ -782,121 +800,5 @@ impl LightManager {
                 );
             }
         }
-    }
-}
-
-struct Framebuffer {
-    sample_count: u32,
-    color_target: wgpu::TextureView,
-
-    normal_view: wgpu::TextureView,
-
-    depth_view: wgpu::TextureView,
-}
-
-impl Framebuffer {
-    const NORMAL: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2Unorm;
-
-    fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, sample_count: u32) -> Self {
-        let color_target = Self::multisampled(
-            device,
-            config,
-            sample_count,
-            config.format,
-            wgpu::TextureUsages::empty(),
-        );
-        let normal_view = Self::multisampled(
-            device,
-            config,
-            sample_count,
-            Self::NORMAL,
-            wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        let depth_view = Self::depth(device, config, sample_count);
-
-        Self {
-            sample_count,
-            color_target,
-            normal_view,
-            depth_view,
-        }
-    }
-
-    fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
-        self.color_target = Self::multisampled(
-            device,
-            config,
-            self.sample_count,
-            config.format,
-            wgpu::TextureUsages::empty(),
-        );
-        self.normal_view = Self::multisampled(
-            device,
-            config,
-            self.sample_count,
-            Self::NORMAL,
-            wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        self.depth_view = Self::depth(device, config, self.sample_count);
-    }
-
-    fn target<'a>(
-        &'a self,
-        view: &'a wgpu::TextureView,
-    ) -> (&'a wgpu::TextureView, Option<&'a wgpu::TextureView>) {
-        if self.sample_count <= 1 {
-            (view, None)
-        } else {
-            (&self.color_target, Some(view))
-        }
-    }
-
-    fn multisampled(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        sample_count: u32,
-        format: wgpu::TextureFormat,
-        usages: wgpu::TextureUsages,
-    ) -> wgpu::TextureView {
-        let size = wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        };
-        let multisampled_frame_descriptor = &wgpu::TextureDescriptor {
-            label: None,
-            size,
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usages,
-        };
-
-        device
-            .create_texture(multisampled_frame_descriptor)
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    }
-
-    fn depth(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        sample_count: u32,
-    ) -> wgpu::TextureView {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: EntityPipeline::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        });
-
-        texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 }

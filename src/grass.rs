@@ -1,10 +1,11 @@
-use super::EntityPipeline;
+use super::{EntityPipeline, Framebuffer};
+use bytemuck::{Pod, Zeroable};
 use std::mem::size_of;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Params {
     pub time: f32,
     pub length: u32,
@@ -191,8 +192,16 @@ impl GrassPipeline {
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_draw",
-                //targets: &[Some(format.into())],
-                targets: &[Some(format.into()), Some(crate::Framebuffer::NORMAL.into())],
+                //targets: &[Some(format.into()), Some(crate::Framebuffer::NORMAL.into())],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        //blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::all(),
+                    }),
+                    Some(crate::Framebuffer::NORMAL.into()),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -202,7 +211,7 @@ impl GrassPipeline {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: EntityPipeline::DEPTH_FORMAT,
+                format: Framebuffer::DEPTH,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
@@ -266,12 +275,12 @@ impl Grass {
 
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("params"),
-            contents: bytemuck::bytes_of(&Params::default()),
+            contents: bytemuck::bytes_of(&Params::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        //let src_vertices = create_source(30, 30, 0.25);
-        let src_vertices = create_source(100, 100, 0.25);
+        let src_vertices = create_source(30, 30, 0.25);
+        //let src_vertices = create_source(100, 100, 0.25);
         let src_vertices_len = src_vertices.len();
         let src_vertices_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("src_vertices"),
