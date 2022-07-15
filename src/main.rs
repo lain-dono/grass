@@ -1,804 +1,272 @@
-use std::{f32::consts, iter, mem, num::NonZeroU32, ops::Range, rc::Rc};
+use bevy::prelude::*;
 
-mod entity;
-mod fog_plane;
-mod framebuffer;
-mod framework;
+mod camera;
 mod grass;
-mod mesh;
-mod post;
-
-use self::entity::{EntityPipeline, EntityUniforms, GlobalUniforms, LightRaw};
-use self::fog_plane::FogPlanePipeline;
-use self::framebuffer::Framebuffer;
-use self::grass::Grass;
-use self::mesh::{create_cube, create_terrain};
-use self::post::Postprocess;
-use glam::{Mat4, Vec4};
-use wgpu::util::{align_to, DeviceExt};
 
 fn main() {
-    framework::run::<Example>("shadow");
-}
+    let mut app = App::new();
 
-#[inline]
-pub fn perspective_wgpu_dx(vertical_fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Mat4 {
-    let t = (vertical_fov / 2.0).tan();
-    let sy = 1.0 / t;
-    let sx = sy / aspect_ratio;
-    let nmf = z_near - z_far;
+    app.add_system(app_exit);
 
-    Mat4 {
-        x_axis: Vec4::new(sx, 0.0, 0.0, 0.0),
-        y_axis: Vec4::new(0.0, sy, 0.0, 0.0),
-        z_axis: Vec4::new(0.0, 0.0, z_far / nmf, -1.0),
-        w_axis: Vec4::new(0.0, 0.0, z_near * z_far / nmf, 0.0),
-    }
-}
+    app.insert_resource(Msaa { samples: 4 });
+    app.insert_resource(WindowDescriptor {
+        // uncomment for unthrottled FPS
+        present_mode: bevy::window::PresentMode::AutoNoVsync,
+        ..default()
+    });
 
-#[inline]
-pub fn perspective_infinite_z_wgpu_dx(vertical_fov: f32, aspect_ratio: f32, z_near: f32) -> Mat4 {
-    let t = (vertical_fov / 2.0).tan();
-    let sy = 1.0 / t;
-    let sx = sy / aspect_ratio;
+    app.add_plugins(DefaultPlugins)
+        .add_startup_system(setup_scene)
+        .add_system(movement)
+        .add_system(animate_light_direction);
 
-    Mat4 {
-        x_axis: Vec4::new(sx, 0.0, 0.0, 0.0),
-        y_axis: Vec4::new(0.0, sy, 0.0, 0.0),
-        z_axis: Vec4::new(0.0, 0.0, -1.0, -1.0),
-        w_axis: Vec4::new(0.0, 0.0, -z_near, 0.0),
-    }
-}
+    app.add_startup_system(crate::camera::spawn_camera)
+        .add_system(crate::camera::pan_orbit_camera);
 
-fn perspective_light(vertical_fov: f32, aspect_ratio: f32, z_near: f32, _z_far: f32) -> Mat4 {
-    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
-    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
-}
-
-fn perspective_scene(vertical_fov: f32, aspect_ratio: f32, z_near: f32, _z_far: f32) -> Mat4 {
-    //perspective_wgpu_dx(vertical_fov, aspect_ratio, z_near, z_far)
-    perspective_infinite_z_wgpu_dx(vertical_fov, aspect_ratio, z_near)
-}
-
-struct Entity {
-    mx_world: glam::Mat4,
-    rotation_speed: f32,
-    color: wgpu::Color,
-    vertex_buf: Rc<wgpu::Buffer>,
-    index_buf: Rc<wgpu::Buffer>,
-    index_format: wgpu::IndexFormat,
-    index_count: usize,
-    uniform_offset: wgpu::DynamicOffset,
-}
-
-struct Light {
-    pos: glam::Vec3,
-    color: wgpu::Color,
-    fov: f32,
-    depth: Range<f32>,
-    target_view: wgpu::TextureView,
-}
-
-impl Light {
-    fn to_raw(&self) -> LightRaw {
-        let view = glam::Mat4::look_at_rh(self.pos, glam::Vec3::ZERO, glam::Vec3::Y);
-        let projection = perspective_light(
-            self.fov * consts::PI / 180.,
-            1.0,
-            self.depth.start,
-            self.depth.end,
-        );
-        let view_proj = projection * view;
-        LightRaw {
-            proj: view_proj.to_cols_array_2d(),
-            pos: [self.pos.x, self.pos.y, self.pos.z, 1.0],
-            color: [
-                self.color.r as f32,
-                self.color.g as f32,
-                self.color.b as f32,
-                1.0,
-            ],
-        }
-    }
-}
-
-struct RenderPass {
-    bind_group: wgpu::BindGroup,
-    uniform_buf: wgpu::Buffer,
-}
-
-struct Example {
-    entities: Vec<Entity>,
-
-    lights: LightManager,
-
-    shadow_pass: RenderPass,
-    forward_pass: RenderPass,
-
-    framebuffer: Framebuffer,
-
-    entity_bind_group: wgpu::BindGroup,
-    entity_uniform_buf: wgpu::Buffer,
-
-    entity_pipeline: EntityPipeline,
-    grass: Grass,
-
-    extra_offset: wgpu::DynamicOffset,
-
-    eye: glam::Vec3,
-    show_grass: bool,
-    show_postprocess: bool,
-    post: Postprocess,
-
-    camera: glam::Mat4,
-    fog_plane: FogPlanePipeline,
-}
-
-impl Example {
-    const SHADOW_SIZE: wgpu::Extent3d = wgpu::Extent3d {
-        width: 2048,
-        height: 2048,
-        depth_or_array_layers: EntityPipeline::MAX_LIGHTS as u32,
-    };
-
-    fn generate_matrix(aspect_ratio: f32, eye: glam::Vec3) -> glam::Mat4 {
-        let projection = perspective_scene(consts::FRAC_PI_2, aspect_ratio, 0.1, 200.0);
-        let view = glam::Mat4::look_at_rh(eye, glam::Vec3::new(0f32, 0.0, 0.0), glam::Vec3::Y);
-        projection * view
-    }
-}
-
-impl framework::Example for Example {
-    fn optional_features() -> wgpu::Features {
-        wgpu::Features::DEPTH_CLIP_CONTROL
+    {
+        app.add_plugin(crate::grass::GrassPlugin);
     }
 
-    /*
-    fn required_features() -> wgpu::Features {
-        wgpu::Features::MULTI_DRAW_INDIRECT
-    }
-    */
+    app.run();
+}
 
-    fn required_limits() -> wgpu::Limits {
-        wgpu::Limits::downlevel_defaults()
-    }
+#[derive(Component)]
+struct Movable;
 
-    fn init(
-        sc_desc: &wgpu::SurfaceConfiguration,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Self {
-        let supports_storage_resources = adapter
-            .get_downlevel_capabilities()
-            .flags
-            .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
-            && device.limits().max_storage_buffers_per_shader_stage > 0;
+/// set up a simple 3D scene
+fn setup_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.spawn_bundle(crate::grass::GrassBundle::default());
 
-        let sample_count = 4;
-        let entity_pipeline = EntityPipeline::new(device, sc_desc.format, sample_count);
-        let grass = Grass::new(device, &entity_pipeline, sc_desc.format, sample_count);
+    // ground plane
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Plane { size: 10.0 })),
+        material: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 1.0,
+            ..default()
+        }),
+        ..default()
+    });
 
-        // Create the vertex and index buffers
-        let (cube_vertex_data, cube_index_data) = create_cube();
-        let cube_vertex_buf = Rc::new(device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Cubes Vertex Buffer"),
-                contents: bytemuck::cast_slice(&cube_vertex_data),
-                usage: wgpu::BufferUsages::VERTEX,
-            },
-        ));
+    // left wall
+    let mut transform = Transform::from_xyz(2.5, 2.5, 0.0);
+    transform.rotate_z(std::f32::consts::FRAC_PI_2);
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
+        transform,
+        material: materials.add(StandardMaterial {
+            base_color: Color::INDIGO,
+            perceptual_roughness: 1.0,
+            ..default()
+        }),
+        ..default()
+    });
+    // back (right) wall
+    let mut transform = Transform::from_xyz(0.0, 2.5, -2.5);
+    transform.rotate_x(std::f32::consts::FRAC_PI_2);
+    commands.spawn_bundle(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
+        transform,
+        material: materials.add(StandardMaterial {
+            base_color: Color::INDIGO,
+            perceptual_roughness: 1.0,
+            ..default()
+        }),
+        ..default()
+    });
 
-        let cube_index_buf = Rc::new(device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Cubes Index Buffer"),
-                contents: bytemuck::cast_slice(&cube_index_data),
-                usage: wgpu::BufferUsages::INDEX,
-            },
-        ));
-
-        let (plane_vertex_data, plane_index_data) = create_terrain(25, 25);
-        let plane_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Plane Vertex Buffer"),
-            contents: bytemuck::cast_slice(&plane_vertex_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let plane_index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Plane Index Buffer"),
-            contents: bytemuck::cast_slice(&plane_index_data),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        struct CubeDesc {
-            offset: glam::Vec3,
-            angle: f32,
-            scale: f32,
-            rotation: f32,
-        }
-        let cube_descs = [
-            CubeDesc {
-                offset: glam::Vec3::new(-2.0, 2.0, -2.0),
-                angle: 10.0,
-                scale: 0.7,
-                rotation: 0.1,
-            },
-            CubeDesc {
-                offset: glam::Vec3::new(2.0, 2.0, -2.0),
-                angle: 50.0,
-                scale: 1.3,
-                rotation: 0.2,
-            },
-            CubeDesc {
-                offset: glam::Vec3::new(-2.0, 2.0, 2.0),
-                angle: 140.0,
-                scale: 1.1,
-                rotation: 0.3,
-            },
-            CubeDesc {
-                offset: glam::Vec3::new(2.0, 2.0, 2.0),
-                angle: 210.0,
-                scale: 0.9,
-                rotation: 0.4,
-            },
-        ];
-
-        let entity_uniform_size = mem::size_of::<EntityUniforms>() as wgpu::BufferAddress;
-        let num_entities = 8 + 1 + cube_descs.len() as wgpu::BufferAddress;
-        // Make the `uniform_alignment` >= `entity_uniform_size` and aligned to `min_uniform_buffer_offset_alignment`.
-        let uniform_alignment = {
-            let alignment =
-                device.limits().min_uniform_buffer_offset_alignment as wgpu::BufferAddress;
-            align_to(entity_uniform_size, alignment)
-        };
-        // Note: dynamic uniform offsets also have to be aligned to `Limits::min_uniform_buffer_offset_alignment`.
-        let entity_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: num_entities * uniform_alignment,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let index_format = wgpu::IndexFormat::Uint16;
-
-        let mut entities = vec![{
-            Entity {
-                mx_world: glam::Mat4::IDENTITY,
-                rotation_speed: 0.0,
-                //color: wgpu::Color::WHITE,
-                color: wgpu::Color {
-                    r: 0.10,
-                    g: 0.00,
-                    b: 0.00,
-                    a: 1.0,
-                },
-                vertex_buf: Rc::new(plane_vertex_buf),
-                index_buf: Rc::new(plane_index_buf),
-                index_format,
-                index_count: plane_index_data.len(),
-                uniform_offset: 0,
-            }
-        }];
-
-        for (i, cube) in cube_descs.iter().enumerate() {
-            let mx_world = glam::Mat4::from_scale_rotation_translation(
-                glam::Vec3::splat(cube.scale),
-                glam::Quat::from_axis_angle(
-                    cube.offset.normalize(),
-                    cube.angle * consts::PI / 180.,
-                ),
-                cube.offset,
-            );
-            entities.push(Entity {
-                mx_world,
-                rotation_speed: cube.rotation,
-                color: wgpu::Color::GREEN,
-                vertex_buf: Rc::clone(&cube_vertex_buf),
-                index_buf: Rc::clone(&cube_index_buf),
-                index_format,
-                index_count: cube_index_data.len(),
-                uniform_offset: ((i + 1) * uniform_alignment as usize) as _,
-            });
-        }
-
-        let extra_offset = ((cube_descs.len() + 1) * uniform_alignment as usize) as _;
-
-        let entity_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &entity_pipeline.entity_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &entity_uniform_buf,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(entity_uniform_size),
-                }),
-            }],
-            label: None,
-        });
-
-        // Create other resources
-        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("shadow"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            compare: Some(wgpu::CompareFunction::LessEqual),
-            ..Default::default()
-        });
-
-        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: Self::SHADOW_SIZE,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: EntityPipeline::SHADOW_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            label: None,
-        });
-        let shadow_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut shadow_target_views = (0..2)
-            .map(|i| {
-                Some(shadow_texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("shadow"),
-                    format: None,
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    aspect: wgpu::TextureAspect::All,
-                    base_mip_level: 0,
-                    mip_level_count: None,
-                    base_array_layer: i as u32,
-                    array_layer_count: NonZeroU32::new(1),
-                }))
-            })
-            .collect::<Vec<_>>();
-        let lights = vec![
-            Light {
-                pos: glam::Vec3::new(7.0, 10.0, -5.0),
-                color: wgpu::Color {
-                    r: 0.5,
-                    g: 1.0,
-                    b: 0.5,
-                    a: 1.0,
-                },
-                fov: 60.0,
-                depth: 1.0..20.0,
-                target_view: shadow_target_views[0].take().unwrap(),
-            },
-            Light {
-                pos: glam::Vec3::new(-5.0, 10.0, 7.0),
-                color: wgpu::Color {
-                    r: 1.0,
-                    g: 0.5,
-                    b: 0.5,
-                    a: 1.0,
-                },
-                fov: 45.0,
-                depth: 1.0..20.0,
-                target_view: shadow_target_views[1].take().unwrap(),
-            },
-        ];
-        let light_uniform_size =
-            (EntityPipeline::MAX_LIGHTS * mem::size_of::<LightRaw>()) as wgpu::BufferAddress;
-        let light_storage_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: light_uniform_size,
-            usage: if supports_storage_resources {
-                wgpu::BufferUsages::STORAGE
-            } else {
-                wgpu::BufferUsages::UNIFORM
-            } | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let shadow_pass = {
-            let uniform_size = mem::size_of::<GlobalUniforms>() as wgpu::BufferAddress;
-
-            // Create pipeline layout
-
-            let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: uniform_size,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            // Create bind group
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &entity_pipeline.shadow_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buf.as_entire_binding(),
-                }],
-                label: None,
-            });
-
-            // Create the render pipeline
-
-            RenderPass {
-                bind_group,
-                uniform_buf,
-            }
-        };
-
-        let eye = glam::Vec3::new(4.0f32, 7.0, 8.0);
-
-        let camera = Self::generate_matrix(sc_desc.width as f32 / sc_desc.height as f32, eye);
-        let forward_pass = {
-            // Create pipeline layout
-
-            let forward_uniforms = GlobalUniforms {
-                proj: camera.to_cols_array_2d(),
-                num_lights: [lights.len() as u32, 0, 0, 0],
-            };
-            let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Uniform Buffer"),
-                contents: bytemuck::bytes_of(&forward_uniforms),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            // Create bind group
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &entity_pipeline.forward_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: light_storage_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&shadow_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                    },
-                ],
-            });
-
-            // Create the render pipeline
-
-            RenderPass {
-                bind_group,
-                uniform_buf,
-            }
-        };
-
-        let framebuffer = Framebuffer::new(device, sc_desc, sample_count);
-
-        {
-            grass.update(queue);
-
-            let mut encoder = device.create_command_encoder(&Default::default());
-            grass.dispatch(&mut encoder);
-            queue.submit(iter::once(encoder.finish()));
-        }
-
-        let post = Postprocess::new(
-            device,
-            sc_desc.format,
-            &framebuffer.depth_view,
-            &framebuffer.normal_view,
-            sample_count,
-        );
-
-        let fog_plane = FogPlanePipeline::new(
-            device,
-            sc_desc.format,
-            &framebuffer.depth_view,
-            sample_count,
-        );
-
-        Self {
-            entities,
-            lights: LightManager {
-                lights,
-                dirty: true,
-                storage_buf: light_storage_buf,
-            },
-
-            framebuffer,
-
-            shadow_pass,
-            forward_pass,
-            entity_uniform_buf,
-            entity_bind_group,
-
-            grass,
-            entity_pipeline,
-
-            extra_offset,
-            eye,
-            show_grass: true,
-            show_postprocess: true,
-
-            camera,
-            post,
-            fog_plane,
-        }
-    }
-
-    fn update(&mut self, event: winit::event::WindowEvent) {
-        use winit::event::{ElementState as State, VirtualKeyCode as Key};
-
-        if let winit::event::WindowEvent::KeyboardInput {
-            input:
-                winit::event::KeyboardInput {
-                    state,
-                    virtual_keycode: Some(key),
-                    ..
-                },
-            ..
-        } = event
-        {
-            match (state, key) {
-                (State::Pressed, Key::W) => self.eye.x += 1.0,
-                (State::Pressed, Key::S) => self.eye.x -= 1.0,
-
-                (State::Pressed, Key::A) => self.eye.z += 1.0,
-                (State::Pressed, Key::D) => self.eye.z -= 1.0,
-
-                (State::Pressed, Key::Key1) => self.show_grass = !self.show_grass,
-                (State::Pressed, Key::Key2) => self.show_postprocess = !self.show_postprocess,
-
-                _ => (),
-            }
-        }
-    }
-
-    fn resize(
-        &mut self,
-        config: &wgpu::SurfaceConfiguration,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-        // update view-projection matrix
-        self.camera = Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
-        let mx_ref: &[f32; 16] = self.camera.as_ref();
-        queue.write_buffer(
-            &self.forward_pass.uniform_buf,
-            0,
-            bytemuck::cast_slice(mx_ref),
-        );
-
-        self.framebuffer.resize(device, config);
-
-        self.post.resize(
-            device,
-            &self.framebuffer.depth_view,
-            &self.framebuffer.normal_view,
-        );
-
-        self.fog_plane.resize(device, &self.framebuffer.depth_view);
-    }
-
-    fn render(
-        &mut self,
-        config: &wgpu::SurfaceConfiguration,
-        view: &wgpu::TextureView,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _spawner: &framework::Spawner,
-    ) {
-        {
-            self.camera =
-                Self::generate_matrix(config.width as f32 / config.height as f32, self.eye);
-            let mx_ref: &[f32; 16] = self.camera.as_ref();
-            queue.write_buffer(
-                &self.forward_pass.uniform_buf,
-                0,
-                bytemuck::cast_slice(mx_ref),
-            );
-        }
-
-        self.grass.update(queue);
-        self.post.update(queue, self.eye);
-        self.fog_plane
-            .update(queue, config.width, config.height, self.camera, 0.1);
-
-        // update uniforms
-        for entity in self.entities.iter_mut() {
-            if entity.rotation_speed != 0.0 {
-                let rotation =
-                    glam::Mat4::from_rotation_x(entity.rotation_speed * consts::PI / 180.);
-                entity.mx_world *= rotation;
-            }
-            let data = EntityUniforms {
-                model: entity.mx_world.to_cols_array_2d(),
-                color: [
-                    entity.color.r as f32,
-                    entity.color.g as f32,
-                    entity.color.b as f32,
-                    entity.color.a as f32,
-                ],
-            };
-            queue.write_buffer(
-                &self.entity_uniform_buf,
-                entity.uniform_offset as wgpu::BufferAddress,
-                bytemuck::bytes_of(&data),
-            );
-        }
-
-        queue.write_buffer(
-            &self.entity_uniform_buf,
-            self.extra_offset as wgpu::BufferAddress,
-            bytemuck::bytes_of(&EntityUniforms {
-                model: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                //color: [0.75, 0.0, 0.0, 1.0],
-                color: [0.0, 0.0, 0.75, 1.0],
+    // cube
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+            material: materials.add(StandardMaterial {
+                base_color: Color::PINK,
+                ..default()
             }),
-        );
+            transform: Transform::from_xyz(0.0, 0.5, 0.0),
+            ..default()
+        })
+        .insert(Movable);
+    // sphere
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::UVSphere {
+                radius: 0.5,
+                ..default()
+            })),
+            material: materials.add(StandardMaterial {
+                base_color: Color::LIME_GREEN,
+                ..default()
+            }),
+            transform: Transform::from_xyz(1.5, 1.0, 1.5),
+            ..default()
+        })
+        .insert(Movable);
 
-        self.lights.update(queue);
+    // ambient light
+    commands.insert_resource(AmbientLight {
+        //color: Color::ORANGE_RED,
+        color: Color::WHITE,
+        brightness: 0.002,
+    });
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        encoder.push_debug_group("shadow passes");
-        for (i, light) in self.lights.lights.iter().enumerate() {
-            encoder.push_debug_group(&format!(
-                "shadow pass {} (light at position {:?})",
-                i, light.pos
-            ));
-
-            // The light uniform buffer already has the projection,
-            // let's just copy it over to the shadow uniform buffer.
-            encoder.copy_buffer_to_buffer(
-                &self.lights.storage_buf,
-                (i * mem::size_of::<LightRaw>()) as wgpu::BufferAddress,
-                &self.shadow_pass.uniform_buf,
-                0,
-                64,
-            );
-
-            encoder.insert_debug_marker("render entities");
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &light.target_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: true,
-                        }),
-                        stencil_ops: None,
+    if true {
+        // red point light
+        commands
+            .spawn_bundle(PointLightBundle {
+                // transform: Transform::from_xyz(5.0, 8.0, 2.0),
+                transform: Transform::from_xyz(1.0, 2.0, 0.0),
+                point_light: PointLight {
+                    intensity: 1600.0, // lumens - roughly a 100W non-halogen incandescent bulb
+                    color: Color::RED,
+                    shadows_enabled: true,
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|builder| {
+                builder.spawn_bundle(PbrBundle {
+                    mesh: meshes.add(Mesh::from(shape::UVSphere {
+                        radius: 0.1,
+                        ..default()
+                    })),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::RED,
+                        emissive: Color::rgba_linear(100.0, 0.0, 0.0, 0.0),
+                        ..default()
                     }),
+                    ..default()
                 });
-                pass.set_pipeline(&self.entity_pipeline.bake);
-                pass.set_bind_group(0, &self.shadow_pass.bind_group, &[]);
-
-                for entity in &self.entities {
-                    pass.set_bind_group(1, &self.entity_bind_group, &[entity.uniform_offset]);
-                    pass.set_index_buffer(entity.index_buf.slice(..), entity.index_format);
-                    pass.set_vertex_buffer(0, entity.vertex_buf.slice(..));
-                    pass.draw_indexed(0..entity.index_count as u32, 0, 0..1);
-                }
-
-                if false {
-                    pass.set_pipeline(&self.grass.pipeline.bake);
-                    pass.set_bind_group(1, &self.entity_bind_group, &[self.extra_offset]);
-                    pass.set_vertex_buffer(0, self.grass.dst_vertices_buf.slice(..));
-                    pass.set_index_buffer(
-                        self.grass.indices_buf.slice(..),
-                        wgpu::IndexFormat::Uint32,
-                    );
-                    pass.draw_indexed_indirect(&self.grass.dst_indirect_buf, 0);
-                }
-            }
-
-            encoder.pop_debug_group();
-        }
-        encoder.pop_debug_group();
-
-        encoder.push_debug_group("grass dispatch");
-        {
-            self.grass.dispatch(&mut encoder);
-        }
-        encoder.pop_debug_group();
-
-        // forward pass
-        encoder.push_debug_group("forward rendering pass");
-        {
-            let (view, resolve_target) = self.framebuffer.target(view);
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.1,
-                                g: 0.2,
-                                b: 0.3,
-                                a: 1.0,
-                            }),
-                            store: true,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &self.framebuffer.normal_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                    }),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.framebuffer.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: true,
-                    }),
-                    stencil_ops: None,
-                }),
             });
 
-            pass.set_pipeline(&self.entity_pipeline.draw);
-            pass.set_bind_group(0, &self.forward_pass.bind_group, &[]);
+        // green spot light
+        commands
+            .spawn_bundle(SpotLightBundle {
+                transform: Transform::from_xyz(-1.0, 2.0, 0.0)
+                    .looking_at(Vec3::new(-1.0, 0.0, 0.0), Vec3::Z),
+                spot_light: SpotLight {
+                    intensity: 1600.0, // lumens - roughly a 100W non-halogen incandescent bulb
+                    color: Color::GREEN,
+                    shadows_enabled: true,
+                    inner_angle: 0.6,
+                    outer_angle: 0.8,
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|builder| {
+                builder.spawn_bundle(PbrBundle {
+                    transform: Transform::from_rotation(Quat::from_rotation_x(
+                        std::f32::consts::PI / 2.0,
+                    )),
+                    mesh: meshes.add(Mesh::from(shape::Capsule {
+                        depth: 0.125,
+                        radius: 0.1,
+                        ..default()
+                    })),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::GREEN,
+                        emissive: Color::rgba_linear(0.0, 100.0, 0.0, 0.0),
+                        ..default()
+                    }),
+                    ..default()
+                });
+            });
 
-            if true {
-                for (_index, entity) in self.entities.iter().enumerate() {
-                    pass.set_bind_group(1, &self.entity_bind_group, &[entity.uniform_offset]);
-                    pass.set_index_buffer(entity.index_buf.slice(..), entity.index_format);
-                    pass.set_vertex_buffer(0, entity.vertex_buf.slice(..));
+        // blue point light
+        commands
+            .spawn_bundle(PointLightBundle {
+                // transform: Transform::from_xyz(5.0, 8.0, 2.0),
+                transform: Transform::from_xyz(0.0, 4.0, 0.0),
+                point_light: PointLight {
+                    intensity: 1600.0, // lumens - roughly a 100W non-halogen incandescent bulb
+                    color: Color::BLUE,
+                    shadows_enabled: true,
+                    ..default()
+                },
+                ..default()
+            })
+            .with_children(|builder| {
+                builder.spawn_bundle(PbrBundle {
+                    mesh: meshes.add(Mesh::from(shape::UVSphere {
+                        radius: 0.1,
+                        ..default()
+                    })),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::BLUE,
+                        emissive: Color::rgba_linear(0.0, 0.0, 100.0, 0.0),
+                        ..default()
+                    }),
+                    ..default()
+                });
+            });
+    }
 
-                    pass.draw_indexed(0..entity.index_count as u32, 0, 0..1);
-                }
-            }
+    // directional 'sun' light
+    const HALF_SIZE: f32 = 10.0;
+    commands.spawn_bundle(DirectionalLightBundle {
+        directional_light: DirectionalLight {
+            // Configure the projection to better fit the scene
+            shadow_projection: OrthographicProjection {
+                left: -HALF_SIZE,
+                right: HALF_SIZE,
+                bottom: -HALF_SIZE,
+                top: HALF_SIZE,
+                near: -10.0 * HALF_SIZE,
+                far: 10.0 * HALF_SIZE,
+                ..default()
+            },
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform {
+            translation: Vec3::new(0.0, 2.0, 0.0),
+            rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4),
+            ..default()
+        },
+        ..default()
+    });
+}
 
-            if self.show_grass {
-                pass.set_pipeline(&self.grass.pipeline.draw);
-                pass.set_bind_group(1, &self.entity_bind_group, &[self.extra_offset]);
-                pass.set_vertex_buffer(0, self.grass.dst_vertices_buf.slice(..));
-                pass.set_index_buffer(self.grass.indices_buf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed_indirect(&self.grass.dst_indirect_buf, 0);
-            }
-        }
-        encoder.pop_debug_group();
-
-        encoder.push_debug_group("postprocess");
-        if self.show_postprocess {
-            self.post.draw(&mut encoder, view);
-        }
-        encoder.pop_debug_group();
-
-        encoder.push_debug_group("fog_plane");
-        self.fog_plane.draw(&mut encoder, view);
-        encoder.pop_debug_group();
-
-        queue.submit(iter::once(encoder.finish()));
+fn animate_light_direction(
+    time: Res<Time>,
+    mut query: Query<&mut Transform, With<DirectionalLight>>,
+) {
+    for mut transform in &mut query {
+        transform.rotate_y(time.delta_seconds() * 0.5);
     }
 }
 
-struct LightManager {
-    lights: Vec<Light>,
-    dirty: bool,
-    storage_buf: wgpu::Buffer,
+fn movement(
+    input: Res<Input<KeyCode>>,
+    time: Res<Time>,
+    mut query: Query<&mut Transform, With<Movable>>,
+) {
+    for mut transform in &mut query {
+        let mut direction = Vec3::ZERO;
+        if input.pressed(KeyCode::Up) {
+            direction.y += 1.0;
+        }
+        if input.pressed(KeyCode::Down) {
+            direction.y -= 1.0;
+        }
+        if input.pressed(KeyCode::Left) {
+            direction.x -= 1.0;
+        }
+        if input.pressed(KeyCode::Right) {
+            direction.x += 1.0;
+        }
+
+        transform.translation += time.delta_seconds() * 2.0 * direction;
+    }
 }
 
-impl LightManager {
-    pub fn update(&mut self, queue: &wgpu::Queue) {
-        if self.dirty {
-            self.dirty = false;
-            for (i, light) in self.lights.iter().enumerate() {
-                queue.write_buffer(
-                    &self.storage_buf,
-                    (i * mem::size_of::<LightRaw>()) as wgpu::BufferAddress,
-                    bytemuck::bytes_of(&light.to_raw()),
-                );
-            }
-        }
+fn app_exit(input: Res<Input<KeyCode>>) {
+    if input.pressed(KeyCode::Escape) {
+        std::process::exit(0);
     }
 }

@@ -1,3 +1,4 @@
+use super::EntityPipeline;
 use bytemuck::{Pod, Zeroable};
 use std::mem::size_of;
 use wgpu::util::DeviceExt;
@@ -5,7 +6,6 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct Params {
-    //view_proj: [f32; 16],
     transform: [f32; 16],
     tint: [f32; 4], // 1,1,1,0.5
     inv_size: [f32; 2],
@@ -13,14 +13,42 @@ pub struct Params {
     znear: f32,
 }
 
+pub struct QuadBuffer {
+    vtx: wgpu::Buffer,
+    idx: wgpu::Buffer,
+}
+
+impl QuadBuffer {
+    fn new(device: &wgpu::Device, size: i8) -> Self {
+        let (p, n) = (size, -size);
+
+        let vtx = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("quad vertices"),
+            contents: bytemuck::cast_slice(&[
+                [p, 0, n, 1],
+                [p, 0, p, 1],
+                [n, 0, n, 1],
+                [n, 0, p, 1],
+            ]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let idx = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("quad indices"),
+            contents: bytemuck::cast_slice(&[0u16, 1, 2, 2, 1, 3]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        Self { vtx, idx }
+    }
+}
+
 pub struct FogPlanePipeline {
     pub bind_group: wgpu::BindGroup,
     pub pipeline: wgpu::RenderPipeline,
     pub layout: wgpu::BindGroupLayout,
     pub buffer: wgpu::Buffer,
-
-    pub vertices: wgpu::Buffer,
-    pub indices: wgpu::Buffer,
+    pub quad: QuadBuffer,
 }
 
 impl FogPlanePipeline {
@@ -106,9 +134,20 @@ impl FogPlanePipeline {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: None,
+            //depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: EntityPipeline::SHADOW_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2, // corresponds to bilinear filtering
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: sample_count,
                 ..Default::default()
             },
             multiview: None,
@@ -122,33 +161,12 @@ impl FogPlanePipeline {
 
         let bind_group = create_bind_group(device, &layout, &buffer, depth);
 
-        let (vertices, indices) = {
-            let indices = crate::mesh::create_quad_indices();
-            let vertices = crate::mesh::create_quad_xz(5, 5);
-
-            let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("fog plane vertices"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-            let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("fog plane indices"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-            (vertices, indices)
-        };
-
         Self {
             layout,
             pipeline,
             buffer,
             bind_group,
-
-            vertices,
-            indices,
+            quad: QuadBuffer::new(device, 5),
         }
     }
 
@@ -160,15 +178,12 @@ impl FogPlanePipeline {
         view_proj: glam::Mat4,
         znear: f32,
     ) {
-        let transform = glam::Mat4::from_translation(glam::vec3(0.0, 4.0, 0.0));
+        let transform = glam::Mat4::from_translation(glam::vec3(0.0, 2.0, 0.0));
         let uniforms = Params {
-            //view_proj: view_proj.to_cols_array(),
-            //transform: transform.to_cols_array(),
             transform: (view_proj * transform).to_cols_array(),
-            //transform: view_proj.to_cols_array(),
-            tint: [1.0, 1.0, 1.0, 0.5],
+            tint: [0.0, 0.0, 0.15, 0.5],
             inv_size: [(width as f32).recip(), (height as f32).recip()],
-            strength: 0.15,
+            strength: 2.95, // 0.15
             znear,
         };
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -178,24 +193,34 @@ impl FogPlanePipeline {
         self.bind_group = create_bind_group(device, &self.layout, &self.buffer, depth);
     }
 
-    pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+    pub fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
+        depth: &wgpu::TextureView,
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
-                resolve_target: None,
+                resolve_target,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: true,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: None,
+                stencil_ops: None,
+            }),
         });
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_index_buffer(self.quad.idx.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_vertex_buffer(0, self.quad.vtx.slice(..));
         pass.draw_indexed(0..6, 0, 0..1);
     }
 }

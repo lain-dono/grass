@@ -12,7 +12,6 @@ struct Params {
 @group(0) @binding(1) var depth_single: texture_depth_2d;
 @group(0) @binding(1) var depth_multi: texture_depth_multisampled_2d;
 
-
 @vertex
 fn vs_main(@location(0) position: vec4<i32>) -> @builtin(position) vec4<f32> {
     return params.transform * vec4<f32>(position);
