@@ -134,5 +134,6 @@ pub fn spawn_camera(mut commands: Commands) {
         .insert(PanOrbitCamera {
             radius,
             ..Default::default()
-        });
+        })
+        .insert(crate::toon::outline::Outline::default());
 }

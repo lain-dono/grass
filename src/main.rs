@@ -1,30 +1,39 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+
 use bevy::prelude::*;
 
 mod camera;
-mod grass;
+mod toon;
 
 fn main() {
     let mut app = App::new();
 
     app.add_system(app_exit);
 
-    app.insert_resource(Msaa { samples: 4 });
+    app.insert_resource(Msaa { samples: 1 });
     app.insert_resource(WindowDescriptor {
         // uncomment for unthrottled FPS
         present_mode: bevy::window::PresentMode::AutoNoVsync,
         ..default()
     });
 
-    app.add_plugins(DefaultPlugins)
-        .add_startup_system(setup_scene)
-        .add_system(movement)
-        .add_system(animate_light_direction);
+    app.add_plugins_with(DefaultPlugins, |group| {
+        crate::toon::replace_core_pipeline(group)
+    })
+    .add_startup_system(setup_scene)
+    .add_system(movement)
+    .add_system(animate_light_direction);
 
     app.add_startup_system(crate::camera::spawn_camera)
         .add_system(crate::camera::pan_orbit_camera);
 
     {
-        app.add_plugin(crate::grass::GrassPlugin);
+        app.add_plugin(crate::toon::GrassPlugin); // mostly working
+
+        app.add_plugin(crate::toon::NormalPassPlugin); // working, but useless now
+        app.add_plugin(crate::toon::PostprocessPassPlugin);
+        app.add_plugin(crate::toon::OutlinePlugin); // not working
     }
 
     app.run();
@@ -39,45 +48,51 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn_bundle(crate::grass::GrassBundle::default());
+    commands.spawn_bundle(crate::toon::grass::GrassBundle::default());
 
     // ground plane
-    commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Plane { size: 10.0 })),
-        material: materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 1.0,
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Plane { size: 10.0 })),
+            material: materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                perceptual_roughness: 1.0,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    });
+        })
+        .insert(crate::toon::normal_pass::NormalPassMaterial);
 
     // left wall
     let mut transform = Transform::from_xyz(2.5, 2.5, 0.0);
     transform.rotate_z(std::f32::consts::FRAC_PI_2);
-    commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
-        transform,
-        material: materials.add(StandardMaterial {
-            base_color: Color::INDIGO,
-            perceptual_roughness: 1.0,
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
+            transform,
+            material: materials.add(StandardMaterial {
+                base_color: Color::INDIGO,
+                perceptual_roughness: 1.0,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    });
+        })
+        .insert(crate::toon::normal_pass::NormalPassMaterial);
     // back (right) wall
     let mut transform = Transform::from_xyz(0.0, 2.5, -2.5);
     transform.rotate_x(std::f32::consts::FRAC_PI_2);
-    commands.spawn_bundle(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
-        transform,
-        material: materials.add(StandardMaterial {
-            base_color: Color::INDIGO,
-            perceptual_roughness: 1.0,
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::Box::new(5.0, 0.15, 5.0))),
+            transform,
+            material: materials.add(StandardMaterial {
+                base_color: Color::INDIGO,
+                perceptual_roughness: 1.0,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    });
+        })
+        .insert(crate::toon::normal_pass::NormalPassMaterial);
 
     // cube
     commands
@@ -90,7 +105,19 @@ fn setup_scene(
             transform: Transform::from_xyz(0.0, 0.5, 0.0),
             ..default()
         })
-        .insert(Movable);
+        .insert(Movable)
+        .insert(crate::toon::normal_pass::NormalPassMaterial);
+
+    commands.spawn_bundle((
+        meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+        Transform::from_xyz(0.0, 0.5, 0.0),
+        GlobalTransform::default(),
+        Visibility::default(),
+        ComputedVisibility::default(),
+        Movable,
+        crate::toon::normal_pass::NormalPassMaterial,
+    ));
+
     // sphere
     commands
         .spawn_bundle(PbrBundle {
@@ -105,7 +132,8 @@ fn setup_scene(
             transform: Transform::from_xyz(1.5, 1.0, 1.5),
             ..default()
         })
-        .insert(Movable);
+        .insert(Movable)
+        .insert(crate::toon::normal_pass::NormalPassMaterial);
 
     // ambient light
     commands.insert_resource(AmbientLight {

@@ -30,7 +30,6 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.world_normal = mesh_normal_local_to_world(vertex.normal);
     out.uv = vertex.uv;
     out.color = vec4<f32>(vec3<f32>(0.079, 0.245, 0.160)*vertex.uv.y, 1.0);
-
     return out;
 }
 
@@ -43,7 +42,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 
 struct Time {
     time_since_startup: f32,
-};
+}
 
 struct FragInput {
     @builtin(position) frag_coord: vec4<f32>,
@@ -53,7 +52,7 @@ struct FragInput {
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
-};
+}
 
 @fragment
 fn fragment(in: FragInput) -> @location(0) vec4<f32> {
@@ -91,3 +90,22 @@ fn fragment(in: FragInput) -> @location(0) vec4<f32> {
 
     return tone_mapping(pbr(pbr_input));
 }
+
+
+//  struct VertexNormalOutput {
+//      @builtin(position) clip_position: vec4<f32>,
+//      @location(0) world_normal: vec3<f32>,
+//  };
+
+//  @vertex
+//  fn vertex_normal_pass(vertex: Vertex) -> VertexNormalOutput {
+//      return VertexNormalOutput(
+//          mesh_position_local_to_clip(mesh.model, vec4<f32>(vertex.position, 1.0)),
+//          mesh_normal_local_to_world(vertex.normal)
+//      );
+//  }
+
+//  @fragment
+//  fn fragment_normal_pass(@location(0) world_normal: vec3<f32>) -> @location(0) vec4<f32> {
+//      return vec4<f32>(world_normal, 1.0);
+//  }

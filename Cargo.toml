@@ -3,7 +3,8 @@ name = "grass"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+trace = ["bevy/trace"]
 
 [dependencies]
 wgpu = "0.13.1"
@@ -14,3 +15,8 @@ async-executor = "*"
 env_logger = "*"
 log = "*"
 pollster = "*"
+noise = "0.7"
+obj-rs = "0.7"
+bitflags = "1.3"
+bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "44566db" }
+radsort = "0.1"

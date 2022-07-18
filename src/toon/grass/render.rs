@@ -20,7 +20,7 @@ pub fn extract_grass(
     for (entity, transform) in query.iter() {
         let transform = transform.compute_matrix();
         commands.get_or_spawn(entity).insert(MeshUniform {
-            flags: 1,
+            flags: 1, // SHADOW_RECEIVER
             transform,
             inverse_transpose_model: transform.inverse().transpose(),
         });
@@ -48,7 +48,7 @@ pub fn queue_grass(
                 entity,
                 pipeline,
                 draw_function,
-                distance: f32::MIN, // draw grass first
+                distance: f32::MAX, // draw grass last
             });
         }
     }
@@ -111,7 +111,6 @@ pub struct GrassRenderPipeline {
 
 impl FromWorld for GrassRenderPipeline {
     fn from_world(world: &mut World) -> Self {
-        //let device = world.resource::<RenderDevice>();
         let asset_server = world.resource::<AssetServer>();
         let mesh_pipeline = world.resource::<MeshPipeline>();
 
@@ -122,8 +121,6 @@ impl FromWorld for GrassRenderPipeline {
         Self {
             view_layout,
             mesh_layout,
-            //terrain_layouts: Vec::new(),
-            //terrain_view_layout,
             shader,
         }
     }
@@ -136,13 +133,6 @@ impl SpecializedRenderPipeline for GrassRenderPipeline {
         //let shader_defs = key.shader_defs();
         let shader_defs = vec![String::from("VERTEX_UVS")];
 
-        /*
-        let vb_desc = VertexBufferLayout {
-            array_stride: (std::mem::size_of::<super::DstVertex>()) as wgpu::BufferAddress,
-            step_mode: ,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
-        };
-        */
         let vb_desc = VertexBufferLayout::from_vertex_formats(
             wgpu::VertexStepMode::Vertex,
             [
@@ -154,12 +144,7 @@ impl SpecializedRenderPipeline for GrassRenderPipeline {
 
         RenderPipelineDescriptor {
             label: None,
-            layout: Some(vec![
-                self.view_layout.clone(),
-                //self.terrain_view_layout.clone(),
-                //self.terrain_layouts[0].clone(), // Todo: do this properly for multiple maps
-                self.mesh_layout.clone(),
-            ]),
+            layout: Some(vec![self.view_layout.clone(), self.mesh_layout.clone()]),
             vertex: VertexState {
                 shader: self.shader.clone(),
                 entry_point: "vertex".into(),

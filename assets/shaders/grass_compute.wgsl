@@ -92,7 +92,7 @@ fn cs_main_fill(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let rand_seed = fract(sin(dot(src_position.xyz, vec3<f32>(12.9898, 78.233, 53.539))) * 43758.5453);
 
     let blade_bottom_width = 0.50;
-    let blade_width  = 0.10;
+    let blade_width  = 0.02;
     let blade_height = 0.50;
 
     // Wind

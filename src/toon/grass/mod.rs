@@ -9,7 +9,7 @@ use bevy::{
         main_graph::node::CAMERA_DRIVER,
         render_graph::RenderGraph,
         render_resource::*,
-        renderer::RenderDevice,
+        renderer::{RenderDevice, RenderQueue},
         RenderApp, RenderStage,
     },
 };
@@ -22,6 +22,35 @@ mod render;
 pub use self::compute::{GrassComputeNode, GrassComputePipeline};
 pub use self::render::{DrawGrass, GrassRenderPipeline};
 
+pub struct GrassPlugin;
+
+impl Plugin for GrassPlugin {
+    fn build(&self, app: &mut App) {
+        let render_device = app.world.resource::<RenderDevice>();
+        let buffer = GrassData::new(render_device);
+
+        app.add_plugin(ExtractComponentPlugin::<Grass>::default());
+        app.add_plugin(ExtractResourcePlugin::<ExtractedTime>::default());
+
+        let render_app = app.sub_app_mut(RenderApp);
+        render_app
+            .insert_resource(buffer)
+            .add_render_command::<Opaque3d, DrawGrass>()
+            //.add_render_command::<super::normal_pass::Normal3d, DrawGrass>()
+            .init_resource::<GrassComputePipeline>()
+            .init_resource::<GrassRenderPipeline>()
+            .init_resource::<SpecializedRenderPipelines<GrassRenderPipeline>>()
+            .add_system_to_stage(RenderStage::Prepare, ExtractedTime::prepare)
+            .add_system_to_stage(RenderStage::Extract, self::render::extract_grass)
+            .add_system_to_stage(RenderStage::Queue, self::render::queue_grass)
+            .add_system_to_stage(RenderStage::Queue, queue_bind_group);
+
+        let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
+        render_graph.add_node("grass", GrassComputeNode::default());
+        render_graph.add_node_edge("grass", CAMERA_DRIVER).unwrap();
+    }
+}
+
 #[derive(Default, Clone, Copy, Component)]
 pub struct Grass;
 
@@ -32,6 +61,32 @@ impl ExtractComponent for Grass {
     #[inline]
     fn extract_component(_item: QueryItem<Self::Query>) -> Self {
         Self
+    }
+}
+
+#[derive(Default)]
+struct ExtractedTime {
+    seconds_since_startup: f32,
+}
+
+impl ExtractedTime {
+    // write the extracted time into the corresponding uniform buffer
+    fn prepare(time: Res<ExtractedTime>, data: Res<GrassData>, render_queue: Res<RenderQueue>) {
+        render_queue.write_buffer(
+            &data.params_buf,
+            0,
+            bevy::core::cast_slice(&[time.seconds_since_startup]),
+        );
+    }
+}
+
+impl ExtractResource for ExtractedTime {
+    type Source = Time;
+
+    fn extract_resource(time: &Self::Source) -> Self {
+        Self {
+            seconds_since_startup: time.seconds_since_startup() as f32,
+        }
     }
 }
 
@@ -54,8 +109,8 @@ impl Default for GrassConfig {
             blade_forward: 0.38,
             blade_curve: 2.1,
 
-            wind_speed: 3.0,
-            wind_strength: 0.05,
+            wind_speed: 1.0,
+            wind_strength: 0.015,
         }
     }
 }
@@ -91,33 +146,6 @@ pub struct GrassBundle {
     pub global_transform: GlobalTransform,
 }
 
-pub struct GrassPlugin;
-
-impl Plugin for GrassPlugin {
-    fn build(&self, app: &mut App) {
-        let render_device = app.world.resource::<RenderDevice>();
-        let buffer = GrassData::new(render_device);
-
-        app.insert_resource(buffer);
-        app.add_plugin(ExtractComponentPlugin::<Grass>::default());
-        app.add_plugin(ExtractResourcePlugin::<GrassData>::default());
-
-        let render_app = app.sub_app_mut(RenderApp);
-        render_app
-            .add_render_command::<Opaque3d, DrawGrass>()
-            .init_resource::<GrassComputePipeline>()
-            .init_resource::<GrassRenderPipeline>()
-            .init_resource::<SpecializedRenderPipelines<GrassRenderPipeline>>()
-            .add_system_to_stage(RenderStage::Queue, self::render::queue_grass)
-            .add_system_to_stage(RenderStage::Extract, self::render::extract_grass)
-            .add_system_to_stage(RenderStage::Queue, queue_bind_group);
-
-        let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
-        render_graph.add_node("grass", GrassComputeNode::default());
-        render_graph.add_node_edge("grass", CAMERA_DRIVER).unwrap();
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GrassSourceVertex {
@@ -136,25 +164,6 @@ pub struct GrassData {
     pub vertex_buffer: Buffer,
     pub index_buffer: Buffer,
     pub indirect_buffer: Buffer,
-}
-
-impl ExtractResource for GrassData {
-    type Source = Self;
-
-    fn extract_resource(data: &Self::Source) -> Self {
-        Self {
-            params_buf: data.params_buf.clone(),
-
-            src_vertices_buf: data.src_vertices_buf.clone(),
-            src_vertices_len: data.src_vertices_len,
-
-            vertex_buffer_len: data.vertex_buffer_len.clone(),
-
-            vertex_buffer: data.vertex_buffer.clone(),
-            index_buffer: data.index_buffer.clone(),
-            indirect_buffer: data.indirect_buffer.clone(),
-        }
-    }
 }
 
 impl GrassData {
@@ -196,7 +205,7 @@ impl GrassData {
             indices
         }
 
-        let src_vertices = create_source(20, 20, 0.10);
+        let src_vertices = create_source(50, 50, 0.05);
         let src_vertices_len = src_vertices.len();
         let src_vertices_buf = device.create_buffer_with_data(&wgpu::util::BufferInitDescriptor {
             label: Some("src_vertices"),

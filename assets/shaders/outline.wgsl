@@ -1,3 +1,14 @@
+
+@vertex
+fn vertex(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    let u = (vertex_index << 1u) & 2u;
+    let v = vertex_index & 2u;
+    let u = f32( 2 * i32(u) - 1);
+    let v = f32(-2 * i32(v) + 1);
+    return vec4<f32>(u, v, 0.0, 1.0);
+}
+
+
 // https://roystan.net/articles/outline-shader.html
 
 struct Params {
@@ -17,20 +28,12 @@ struct Params {
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
+
+//@group(0) @binding(1) var depth_multi: texture_depth_multisampled_2d;
 @group(0) @binding(1) var depth_single: texture_depth_2d;
-@group(0) @binding(1) var depth_multi: texture_depth_multisampled_2d;
+//@group(0) @binding(2) var normal_multi: texture_multisampled_2d<f32>;
 @group(0) @binding(2) var normal_single: texture_2d<f32>;
-@group(0) @binding(2) var normal_multi: texture_multisampled_2d<f32>;
 
-@vertex
-fn vs_fullscreen(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
-    let u = (vertex_index << 1u) & 2u;
-    let v = vertex_index & 2u;
-    let u = f32( 2 * i32(u) - 1);
-    let v = f32(-2 * i32(v) + 1);
-
-    return vec4<f32>(u, v, 0.0, 1.0);
-}
 
 fn edge_detect(depth: array<f32, 4>, normal: array<vec3<f32>, 4>) -> f32 {
     let view_space_directon = normalize(params.view_space_directon.xyz);
@@ -65,8 +68,12 @@ fn edge_detect(depth: array<f32, 4>, normal: array<vec3<f32>, 4>) -> f32 {
     return max(edge_depth, edge_normal);
 }
 
+fn remap(input: f32, in_range: vec2<f32>, out_range: vec2<f32>) -> f32 {
+    return out_range.x + (input - in_range.x) * (out_range.y - out_range.x) / (in_range.y - in_range.x);
+}
+
 @fragment
-fn fs_main_single(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let px = vec2<i32>(position.xy);
 
     let scale = max(1, params.scale);
@@ -82,41 +89,51 @@ fn fs_main_single(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f
         1.0 - textureLoad(depth_single, px + br, 0),
     );
 
-    let normal = array<vec3<f32>, 4>(
-        textureLoad(normal_single, px + tl, 0).xyz,
-        textureLoad(normal_single, px + rt, 0).xyz,
-        textureLoad(normal_single, px + lb, 0).xyz,
-        textureLoad(normal_single, px + br, 0).xyz,
-    );
+//  let normal = array<vec3<f32>, 4>(
+//      textureLoad(normal_single, px + tl, 0).xyz,
+//      textureLoad(normal_single, px + rt, 0).xyz,
+//      textureLoad(normal_single, px + lb, 0).xyz,
+//      textureLoad(normal_single, px + br, 0).xyz,
+//  );
 
-    let edge = edge_detect(depth, normal);
-    return vec4<f32>(params.color.rgb, params.color.a * edge);
+    //let edge = edge_detect(depth, normal);
+    //return vec4<f32>(params.color.rgb, params.color.a * edge);
+    //return vec4<f32>(normal[0], 1.0);
+
+    let d = depth[0];
+
+    //let d = remap(d, vec2<f32>(0.0, 0.03184), vec2<f32>(0.0, 1.0));
+    let d = select(0.0, 1.0, d == 1.0);
+
+    return vec4<f32>(d, 0.0, 0.0, 0.5);
+    //return params.color;
+    //return vec4<f32>(1.0, 0.0, 0.0, 0.0);
 }
 
-@fragment
-fn fs_main_multi(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(position.xy);
+//  @fragment
+//  fn fs_main_multi(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+//      let px = vec2<i32>(position.xy);
 
-    let scale = max(0, params.scale);
-    let tl = vec2<i32>( scale, -scale);
-    let rt = vec2<i32>( scale,  scale);
-    let lb = vec2<i32>(-scale, -scale);
-    let br = vec2<i32>(-scale,  scale);
+//      let scale = max(0, params.scale);
+//      let tl = vec2<i32>( scale, -scale);
+//      let rt = vec2<i32>( scale,  scale);
+//      let lb = vec2<i32>(-scale, -scale);
+//      let br = vec2<i32>(-scale,  scale);
 
-    let depth = array<f32, 4>(
-        1.0 - textureLoad(depth_multi, px + tl, 0),
-        1.0 - textureLoad(depth_multi, px + rt, 1),
-        1.0 - textureLoad(depth_multi, px + lb, 2),
-        1.0 - textureLoad(depth_multi, px + br, 3),
-    );
+//      let depth = array<f32, 4>(
+//          1.0 - textureLoad(depth_multi, px + tl, 0),
+//          1.0 - textureLoad(depth_multi, px + rt, 1),
+//          1.0 - textureLoad(depth_multi, px + lb, 2),
+//          1.0 - textureLoad(depth_multi, px + br, 3),
+//      );
 
-    let normal = array<vec3<f32>, 4>(
-        textureLoad(normal_multi, px + tl, 0).xyz,
-        textureLoad(normal_multi, px + rt, 1).xyz,
-        textureLoad(normal_multi, px + lb, 2).xyz,
-        textureLoad(normal_multi, px + br, 3).xyz,
-    );
+//      let normal = array<vec3<f32>, 4>(
+//          textureLoad(normal_multi, px + tl, 0).xyz,
+//          textureLoad(normal_multi, px + rt, 1).xyz,
+//          textureLoad(normal_multi, px + lb, 2).xyz,
+//          textureLoad(normal_multi, px + br, 3).xyz,
+//      );
 
-    let edge = edge_detect(depth, normal);
-    return vec4<f32>(params.color.rgb * edge, params.color.a * edge);
-}
+//      let edge = edge_detect(depth, normal);
+//      return vec4<f32>(params.color.rgb * edge, params.color.a * edge);
+//  }
