@@ -1,25 +1,20 @@
 use bevy::ecs::system::lifetimeless::Read;
-use bevy::pbr::{DrawMesh, MeshUniform, SetMeshBindGroup, SetMeshViewBindGroup};
 use bevy::prelude::*;
-use bevy::render::extract_component::ExtractComponentPlugin;
-use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_graph::{Node, NodeRunError, RenderGraphContext, SlotInfo, SlotType};
-use bevy::render::render_graph::{RenderGraph, RunGraphOnViewNode};
-use bevy::render::render_phase::{sort_phase_system, AddRenderCommand, SetItemPipeline};
-use bevy::render::render_phase::{DrawFunctions, TrackedRenderPass};
-use bevy::render::renderer::RenderContext;
-use bevy::render::view::ViewDepthTexture;
-use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{
-    camera::ExtractedCamera, render_phase::RenderPhase, render_resource::*, renderer::RenderDevice,
-    texture::TextureCache, Extract, RenderApp, RenderStage,
-};
-use bevy::render::{
-    render_phase::{CachedRenderPipelinePhaseItem, DrawFunctionId, EntityPhaseItem, PhaseItem},
-    render_resource::CachedRenderPipelineId,
+    camera::ExtractedCamera,
+    render_graph::{
+        Node, NodeRunError, RenderGraph, RenderGraphContext, RunGraphOnViewNode, SlotInfo, SlotType,
+    },
+    render_phase::{
+        sort_phase_system, CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions,
+        EntityPhaseItem, PhaseItem, RenderPhase, TrackedRenderPass,
+    },
+    render_resource::*,
+    renderer::RenderContext,
+    view::{ExtractedView, ViewTarget},
+    Extract, RenderApp, RenderStage,
 };
 use bevy::utils::FloatOrd;
-use bevy::utils::HashMap;
 use std::cmp::Reverse;
 
 pub mod draw_postprocess_graph {
@@ -45,42 +40,6 @@ impl Plugin for PostprocessPassPlugin {
             .add_system_to_stage(RenderStage::Extract, extract_postprocess_3d_camera_phases)
             .add_system_to_stage(RenderStage::PhaseSort, sort_phase_system::<Postprocess3d>);
 
-        /*
-        let postprocess_pass_node = PostprocessPassNode::new(&mut render_app.world);
-
-        let mut graph = render_app.world.resource_mut::<RenderGraph>();
-        let draw_3d_graph = graph
-            .get_sub_graph_mut(bevy::core_pipeline::core_3d::graph::NAME)
-            .unwrap();
-        draw_3d_graph.add_node(
-            draw_postprocess_graph::node::POSTPROCESS_PASS,
-            postprocess_pass_node,
-        );
-
-        draw_3d_graph
-            .add_node_edge(
-                bevy::core_pipeline::core_3d::graph::node::MAIN_PASS,
-                draw_postprocess_graph::node::POSTPROCESS_PASS,
-            )
-            .unwrap();
-
-        draw_3d_graph
-            .add_node_edge(
-                super::normal_pass::draw_normal_graph::node::NORMAL_PASS,
-                draw_postprocess_graph::node::POSTPROCESS_PASS,
-            )
-            .unwrap();
-
-        draw_3d_graph
-            .add_slot_edge(
-                draw_3d_graph.input_node().unwrap().id,
-                bevy::core_pipeline::core_3d::graph::input::VIEW_ENTITY,
-                draw_postprocess_graph::node::POSTPROCESS_PASS,
-                PostprocessPassNode::IN_VIEW,
-            )
-            .unwrap();
-        */
-
         let sub_graph = get_graph(render_app);
         let mut graph = render_app.world.resource_mut::<RenderGraph>();
         if let Some(graph_3d) = graph.get_sub_graph_mut(bevy::core_pipeline::core_3d::graph::NAME) {
@@ -95,6 +54,14 @@ impl Plugin for PostprocessPassPlugin {
                     draw_postprocess_graph::node::POSTPROCESS_PASS,
                 )
                 .unwrap();
+
+            graph_3d
+                .add_node_edge(
+                    super::normal_pass::draw_normal_graph::node::NORMAL_PASS,
+                    draw_postprocess_graph::node::POSTPROCESS_PASS,
+                )
+                .unwrap();
+
             graph_3d
                 .add_slot_edge(
                     graph_3d.input_node().unwrap().id,

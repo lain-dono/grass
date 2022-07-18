@@ -92,20 +92,20 @@ fn fragment(in: FragInput) -> @location(0) vec4<f32> {
 }
 
 
-//  struct VertexNormalOutput {
-//      @builtin(position) clip_position: vec4<f32>,
-//      @location(0) world_normal: vec3<f32>,
-//  };
+struct VertexNormalOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_normal: vec3<f32>,
+};
 
-//  @vertex
-//  fn vertex_normal_pass(vertex: Vertex) -> VertexNormalOutput {
-//      return VertexNormalOutput(
-//          mesh_position_local_to_clip(mesh.model, vec4<f32>(vertex.position, 1.0)),
-//          mesh_normal_local_to_world(vertex.normal)
-//      );
-//  }
+@vertex
+fn vertex_normal_pass(vertex: Vertex) -> VertexNormalOutput {
+    return VertexNormalOutput(
+        mesh_position_local_to_clip(mesh.model, vec4<f32>(vertex.position, 1.0)),
+        mesh_normal_local_to_world(vertex.normal)
+    );
+}
 
-//  @fragment
-//  fn fragment_normal_pass(@location(0) world_normal: vec3<f32>) -> @location(0) vec4<f32> {
-//      return vec4<f32>(world_normal, 1.0);
-//  }
+@fragment
+fn fragment_normal_pass(@location(0) world_normal: vec3<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(world_normal * vec3<f32>(0.5) + vec3<f32>(0.5), 1.0);
+}

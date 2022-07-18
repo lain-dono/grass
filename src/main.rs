@@ -11,7 +11,7 @@ fn main() {
 
     app.add_system(app_exit);
 
-    app.insert_resource(Msaa { samples: 1 });
+    app.insert_resource(Msaa { samples: 4 });
     app.insert_resource(WindowDescriptor {
         // uncomment for unthrottled FPS
         present_mode: bevy::window::PresentMode::AutoNoVsync,
@@ -78,6 +78,7 @@ fn setup_scene(
             ..default()
         })
         .insert(crate::toon::normal_pass::NormalPassMaterial);
+
     // back (right) wall
     let mut transform = Transform::from_xyz(0.0, 2.5, -2.5);
     transform.rotate_x(std::f32::consts::FRAC_PI_2);
@@ -107,16 +108,6 @@ fn setup_scene(
         })
         .insert(Movable)
         .insert(crate::toon::normal_pass::NormalPassMaterial);
-
-    commands.spawn_bundle((
-        meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        Transform::from_xyz(0.0, 0.5, 0.0),
-        GlobalTransform::default(),
-        Visibility::default(),
-        ComputedVisibility::default(),
-        Movable,
-        crate::toon::normal_pass::NormalPassMaterial,
-    ));
 
     // sphere
     commands

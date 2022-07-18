@@ -29,17 +29,41 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 
-//@group(0) @binding(1) var depth_multi: texture_depth_multisampled_2d;
-@group(0) @binding(1) var depth_single: texture_depth_2d;
-//@group(0) @binding(2) var normal_multi: texture_multisampled_2d<f32>;
-@group(0) @binding(2) var normal_single: texture_2d<f32>;
+#ifdef MULTISAMPLED
+@group(0) @binding(1) var depth: texture_depth_multisampled_2d;
+@group(0) @binding(2) var normal: texture_multisampled_2d<f32>;
+#else
+@group(0) @binding(1) var depth: texture_depth_2d;
+@group(0) @binding(2) var normal: texture_2d<f32>;
+#endif
 
 
-fn edge_detect(depth: array<f32, 4>, normal: array<vec3<f32>, 4>) -> f32 {
+@fragment
+fn fragment(@builtin(position) position: vec4<f32>, @builtin(sample_index) sample_index: u32) -> @location(0) vec4<f32> {
+    let px = vec2<i32>(position.xy);
+    let sample_index = i32(sample_index);
+
+    let scale = max(1, params.scale);
+
+    let tl = vec2<i32>( scale, -scale);
+    let rt = vec2<i32>( scale,  scale);
+    let lb = vec2<i32>(-scale, -scale);
+    let br = vec2<i32>(-scale,  scale);
+
+    let depth_0 = 1.0 - textureLoad(depth, px + tl, sample_index);
+    let depth_1 = 1.0 - textureLoad(depth, px + rt, sample_index);
+    let depth_2 = 1.0 - textureLoad(depth, px + lb, sample_index);
+    let depth_3 = 1.0 - textureLoad(depth, px + br, sample_index);
+
+    let normal_0 = textureLoad(normal, px + tl, sample_index).xyz;
+    let normal_1 = textureLoad(normal, px + rt, sample_index).xyz;
+    let normal_2 = textureLoad(normal, px + lb, sample_index).xyz;
+    let normal_3 = textureLoad(normal, px + br, sample_index).xyz;
+
     let view_space_directon = normalize(params.view_space_directon.xyz);
 
     // Transform the view normal from the 0...1 range to the -1...1 range.
-    let view_normal = normal[0] * 2.0 - 1.0;
+    let view_normal = normal_0 * 2.0 - 1.0;
     let NdotV = 1.0 - dot(view_normal, -view_space_directon);
 
     // Return a value in the 0...1 range depending on where NdotV lies between depth_normal_threshold and 1.
@@ -49,91 +73,23 @@ fn edge_detect(depth: array<f32, 4>, normal: array<vec3<f32>, 4>) -> f32 {
 
     // Modulate the threshold by the existing depth value;
     // pixels further from the screen will require smaller differences to draw an edge.
-    let depth_threshold = params.depth_threshold * depth[0] * normal_threshold;
+    let depth_threshold = params.depth_threshold * depth_0 * normal_threshold;
 
     // edge_depth is calculated using the Roberts cross operator.
     // The same operation is applied to the normal below.
     // https://en.wikipedia.org/wiki/Roberts_cross
-    let depth_a = depth[1] - depth[2];
-    let depth_b = depth[0] - depth[3];
+    let depth_a = depth_1 - depth_2;
+    let depth_b = depth_0 - depth_3;
     let edge_depth = sqrt(depth_a * depth_a + depth_b * depth_b) * 100.0;
     let edge_depth = step(depth_threshold, edge_depth);
 
     // Dot the finite differences with themselves to transform the three-dimensional values to scalars.
-    let normal_a = normal[1] - normal[2];
-    let normal_b = normal[0] - normal[3];
+    let normal_a = normal_1 - normal_2;
+    let normal_b = normal_0 - normal_3;
     let edge_normal = sqrt(dot(normal_a, normal_a) + dot(normal_b, normal_b));
     let edge_normal = step(params.normal_threshold, edge_normal);
 
-    return max(edge_depth, edge_normal);
+    let edge = max(edge_depth, edge_normal);
+
+    return vec4<f32>(params.color.rgb * edge, params.color.a * edge);
 }
-
-fn remap(input: f32, in_range: vec2<f32>, out_range: vec2<f32>) -> f32 {
-    return out_range.x + (input - in_range.x) * (out_range.y - out_range.x) / (in_range.y - in_range.x);
-}
-
-@fragment
-fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(position.xy);
-
-    let scale = max(1, params.scale);
-    let tl = vec2<i32>( scale, -scale);
-    let rt = vec2<i32>( scale,  scale);
-    let lb = vec2<i32>(-scale, -scale);
-    let br = vec2<i32>(-scale,  scale);
-
-    let depth = array<f32, 4>(
-        1.0 - textureLoad(depth_single, px + tl, 0),
-        1.0 - textureLoad(depth_single, px + rt, 0),
-        1.0 - textureLoad(depth_single, px + lb, 0),
-        1.0 - textureLoad(depth_single, px + br, 0),
-    );
-
-//  let normal = array<vec3<f32>, 4>(
-//      textureLoad(normal_single, px + tl, 0).xyz,
-//      textureLoad(normal_single, px + rt, 0).xyz,
-//      textureLoad(normal_single, px + lb, 0).xyz,
-//      textureLoad(normal_single, px + br, 0).xyz,
-//  );
-
-    //let edge = edge_detect(depth, normal);
-    //return vec4<f32>(params.color.rgb, params.color.a * edge);
-    //return vec4<f32>(normal[0], 1.0);
-
-    let d = depth[0];
-
-    //let d = remap(d, vec2<f32>(0.0, 0.03184), vec2<f32>(0.0, 1.0));
-    let d = select(0.0, 1.0, d == 1.0);
-
-    return vec4<f32>(d, 0.0, 0.0, 0.5);
-    //return params.color;
-    //return vec4<f32>(1.0, 0.0, 0.0, 0.0);
-}
-
-//  @fragment
-//  fn fs_main_multi(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-//      let px = vec2<i32>(position.xy);
-
-//      let scale = max(0, params.scale);
-//      let tl = vec2<i32>( scale, -scale);
-//      let rt = vec2<i32>( scale,  scale);
-//      let lb = vec2<i32>(-scale, -scale);
-//      let br = vec2<i32>(-scale,  scale);
-
-//      let depth = array<f32, 4>(
-//          1.0 - textureLoad(depth_multi, px + tl, 0),
-//          1.0 - textureLoad(depth_multi, px + rt, 1),
-//          1.0 - textureLoad(depth_multi, px + lb, 2),
-//          1.0 - textureLoad(depth_multi, px + br, 3),
-//      );
-
-//      let normal = array<vec3<f32>, 4>(
-//          textureLoad(normal_multi, px + tl, 0).xyz,
-//          textureLoad(normal_multi, px + rt, 1).xyz,
-//          textureLoad(normal_multi, px + lb, 2).xyz,
-//          textureLoad(normal_multi, px + br, 3).xyz,
-//      );
-
-//      let edge = edge_detect(depth, normal);
-//      return vec4<f32>(params.color.rgb * edge, params.color.a * edge);
-//  }

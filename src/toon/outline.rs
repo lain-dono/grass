@@ -1,4 +1,4 @@
-use bevy::ecs::system::lifetimeless::{Read, SQuery, SRes};
+use bevy::ecs::system::lifetimeless::{Read, SQuery};
 use bevy::ecs::system::SystemParamItem;
 use bevy::prelude::*;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
@@ -6,11 +6,10 @@ use bevy::render::render_phase::{
     AddRenderCommand, DrawFunctions, EntityRenderCommand, RenderCommandResult, RenderPhase,
     SetItemPipeline, TrackedRenderPass,
 };
-use bevy::render::renderer::{RenderDevice, RenderQueue};
+use bevy::render::renderer::RenderDevice;
 use bevy::render::texture::BevyDefault;
 use bevy::render::view::{ExtractedView, ViewDepthTexture};
 use bevy::render::{render_resource::*, RenderApp, RenderStage};
-use bevy::utils::FloatOrd;
 
 use super::normal_pass::ViewNormalTexture;
 use super::postprocess::Postprocess3d;
@@ -103,7 +102,7 @@ impl Default for Outline {
                 alpha: 0.25,
             },
             scale: 0,
-            depth_threshold: 1.5,
+            depth_threshold: 6.0, // 1.5
             depth_normal_threshold: 0.5,
             depth_normal_threshold_scale: 7.0,
             normal_threshold: 0.4,
@@ -169,6 +168,7 @@ pub struct OutlineBindGroup(BindGroup);
 
 fn queue_bind_group(
     mut commands: Commands,
+    msaa: Res<Msaa>,
     pipeline: Res<OutlinePipeline>,
     device: Res<RenderDevice>,
     query: Query<(
@@ -178,10 +178,15 @@ fn queue_bind_group(
         &ViewNormalTexture,
     )>,
 ) {
+    let multisampled = msaa.samples > 1;
     for (entity, buffer, depth, normal) in query.iter() {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("outline"),
-            layout: &pipeline.bind_group_layout,
+            layout: if multisampled {
+                &pipeline.bind_group_layout_multisampled
+            } else {
+                &pipeline.bind_group_layout
+            },
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -205,6 +210,7 @@ fn queue_bind_group(
 
 pub struct OutlinePipeline {
     bind_group_layout: BindGroupLayout,
+    bind_group_layout_multisampled: BindGroupLayout,
     shader: Handle<Shader>,
 }
 
@@ -213,8 +219,6 @@ impl FromWorld for OutlinePipeline {
         let device = world.resource::<RenderDevice>();
         let asset_server = world.resource::<AssetServer>();
 
-        //let multisampled = sample_count > 1;
-        let multisampled = false;
         let uniform_size = std::mem::size_of::<OutlineParams>() as wgpu::BufferAddress;
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -236,7 +240,7 @@ impl FromWorld for OutlinePipeline {
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -246,17 +250,55 @@ impl FromWorld for OutlinePipeline {
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled,
+                        multisampled: false,
                     },
                     count: None,
                 },
             ],
         });
 
+        let bind_group_layout_multisampled =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("outline multisampled"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(uniform_size),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: true,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: true,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
         let shader = asset_server.load("shaders/outline.wgsl");
 
         Self {
             bind_group_layout,
+            bind_group_layout_multisampled,
             shader,
         }
     }
@@ -289,12 +331,22 @@ impl SpecializedRenderPipeline for OutlinePipeline {
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         //let shader_defs = key.shader_defs();
-        let shader_defs = vec![];
         //let shader_defs = vec![String::from("VERTEX_UVS")];
+
+        let multisampled = key.msaa_samples() > 1;
+
+        let (shader_defs, layout) = if multisampled {
+            (
+                vec![String::from("MULTISAMPLED")],
+                self.bind_group_layout_multisampled.clone(),
+            )
+        } else {
+            (vec![], self.bind_group_layout.clone())
+        };
 
         RenderPipelineDescriptor {
             label: None,
-            layout: Some(vec![self.bind_group_layout.clone()]),
+            layout: Some(vec![layout]),
             vertex: VertexState {
                 shader: self.shader.clone(),
                 entry_point: "vertex".into(),

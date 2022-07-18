@@ -2,7 +2,7 @@ use bevy::pbr::{DrawMesh, MeshUniform, SetMeshBindGroup, SetMeshViewBindGroup};
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponentPlugin;
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_graph::{RenderGraph, RunGraphOnViewNode};
+use bevy::render::render_graph::RenderGraph;
 use bevy::render::render_phase::{
     sort_phase_system, AddRenderCommand, SetItemPipeline, TrackedRenderPass,
 };
@@ -12,8 +12,10 @@ use bevy::render::{
 };
 use bevy::utils::HashMap;
 
+//const FORMAT: TextureFormat = TextureFormat::Rgba16Snorm;
+const FORMAT: TextureFormat = TextureFormat::Rgb10a2Unorm;
+
 pub mod draw_normal_graph {
-    pub const NAME: &str = "draw_normal";
 
     pub mod node {
         /// Label for the normal pass node.
@@ -129,7 +131,7 @@ pub fn prepare_core_3d_normal_textures(
                             mip_level_count: 1,
                             sample_count: msaa.samples,
                             dimension: TextureDimension::D2,
-                            format: TextureFormat::Rgb10a2Unorm,
+                            format: FORMAT,
                             usage: TextureUsages::RENDER_ATTACHMENT
                                 | TextureUsages::TEXTURE_BINDING,
                         },
@@ -197,7 +199,7 @@ impl SpecializedMeshPipeline for NormalPassPipeline {
         //let blend = frag.targets[0].as_ref().unwrap().blend;
         let blend = Some(BlendState::REPLACE);
         frag.targets = vec![Some(ColorTargetState {
-            format: TextureFormat::Rgb10a2Unorm,
+            format: FORMAT,
             blend,
             write_mask: ColorWrites::ALL,
         })];
@@ -208,7 +210,7 @@ impl SpecializedMeshPipeline for NormalPassPipeline {
         ]);
         descriptor.depth_stencil = Some(DepthStencilState {
             format: TextureFormat::Depth32Float,
-            depth_write_enabled: true,
+            depth_write_enabled: false,
             depth_compare: CompareFunction::GreaterEqual,
             stencil: StencilState::default(),
             bias: DepthBiasState::default(),
@@ -318,7 +320,7 @@ impl Node for NormalPassNode {
                     depth_ops: Some(Operations {
                         // NOTE: 0.0 is the far plane due to bevy's use of reverse-z projections.
                         load: wgpu::LoadOp::Load,
-                        store: false,
+                        store: true,
                     }),
                     stencil_ops: None,
                 }),
